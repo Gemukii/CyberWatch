@@ -1,0 +1,35 @@
+services:
+  cyberwatch:
+    build: .
+    image: cyberwatch:latest
+    container_name: cyberwatch
+    restart: unless-stopped
+
+    env_file: .env
+
+    # Nécessaire pour que DIGEST_HOUR corresponde à l'heure locale.
+    environment:
+      - TZ=${TIMEZONE:-Europe/Paris}
+
+    # Le bot n'écrit rien : le système de fichiers peut être en lecture seule.
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # --- (VPS modeste) ---
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.50"
+
+    # Logs bornés
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

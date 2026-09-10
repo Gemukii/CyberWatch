@@ -1,0 +1,29 @@
+# Service systemd — à copier dans /etc/systemd/system/cyberwatch.service
+# Adapte User et les chemins à ton VPS.
+[Unit]
+Description=CyberWatch - bot Discord de veille cyber
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/cyberwatch
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/opt/cyberwatch/.venv/bin/python /opt/cyberwatch/bot.py
+Restart=always
+RestartSec=15
+
+# Durcissement basique (cohérent avec un projet de portfolio cyber)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/cyberwatch
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
