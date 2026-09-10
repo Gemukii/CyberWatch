@@ -1,0 +1,24 @@
+# Secrets — ne doivent JAMAIS entrer dans l'image
+.env
+*.env
+!.env.example
+
+# Développement
+tests/
+docs/
+.github/
+assets/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Git et outillage
+.git/
+.gitignore
+*.md
+requirements-dev.txt
+cyberwatch.service
+Dockerfile
+docker-compose.yml
