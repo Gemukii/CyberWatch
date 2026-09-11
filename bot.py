@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Point d'entrée : ordonnancement, commandes slash, cycle de veille.
+Entry point: scheduling, slash commands, watch cycle.
 
-Un cycle collecte toujours, mais ne publie que sur urgence avérée ou à
-l'heure du digest. Détail du pipeline : docs/ARCHITECTURE.md
+A cycle always collects, but only publishes on a confirmed urgent alert or
+at digest time. Pipeline details: docs/ARCHITECTURE.md
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ logging.basicConfig(
 log = logging.getLogger("cyberwatch")
 logging.getLogger("discord").setLevel(logging.WARNING)
 
-# Commandes slash uniquement : évite l'intent privilégiée MESSAGE CONTENT.
+# Slash commands only: avoids the privileged MESSAGE CONTENT intent.
 intents = discord.Intents.default()
 
 bot = commands.Bot(command_prefix="!cyberwatch-unused", intents=intents, help_command=None)
@@ -46,11 +46,11 @@ state = State(retention_days=settings.retention_days)
 summarizer = Summarizer(settings)
 enricher = Enricher(settings)
 
-# Empêche deux cycles simultanés (boucle auto + commande manuelle).
+# Prevents two simultaneous cycles (auto loop + manual command).
 queue = CandidateQueue(ttl_hours=settings.candidate_ttl_hours)
 
-# Poids appris depuis les réactions 👍/👎. Recalculés périodiquement depuis
-# l'historique Discord, jamais stockés : voir feedback.py.
+# Weights learned from 👍/👎 reactions. Recomputed periodically from
+# Discord history, never stored: see feedback.py.
 learned = feedback_mod.LearnedWeights(
     min_votes=settings.feedback_min_votes,
     max_adjustment=settings.feedback_max_adjustment,
@@ -60,10 +60,10 @@ _feedback_refreshed_at = 0.0
 
 async def refresh_feedback(channel, force: bool = False) -> bool:
     """
-    Recalcule les poids appris si le cache a expiré.
+    Recomputes learned weights if the cache has expired.
 
-    Relire l'historique coûte des appels à l'API Discord : on ne le fait
-    qu'une fois par `FEEDBACK_TTL_HOURS`, pas à chaque cycle.
+    Re-reading history costs Discord API calls: this only runs once per
+    `FEEDBACK_TTL_HOURS`, not every cycle.
     """
     global learned, _feedback_refreshed_at
     if not settings.enable_feedback or channel is None:
@@ -87,12 +87,11 @@ budget = DailyBudget(
 cycle_lock = asyncio.Lock()
 
 
-# --- Cycle de veille ---
+# --- Watch cycle ---
 async def collect(report: dict) -> list:
     """
-    Étape gratuite : collecte, filtre, enrichit, et alimente la file de
-    candidats. Aucun appel IA ici, donc elle peut tourner toutes les heures
-    sans coût.
+    Free step: collects, filters, enriches, and feeds the candidate queue.
+    No AI call happens here, so it can run every hour at no cost.
     """
     articles, feed_results = await sources.fetch_all_feeds(
         settings.feeds, settings.max_age_hours
@@ -102,13 +101,13 @@ async def collect(report: dict) -> list:
 
     unhealthy = state.unhealthy_feeds(settings.feed_failure_threshold)
     if unhealthy:
-        log.warning("Flux en panne : %s", ", ".join(f.name for f in unhealthy))
+        log.warning("Feeds down: %s", ", ".join(f.name for f in unhealthy))
 
     if not articles:
         return []
 
-    # Pré-filtrage sur titre + résumé RSS, seuil abaissé : on garde de la
-    # marge avant les étapes coûteuses en réseau.
+    # Pre-filter on title + RSS summary, lowered threshold: keeps margin
+    # before the network-costly steps.
     shortlist = filters.select_articles(
         articles,
         state,
@@ -124,7 +123,7 @@ async def collect(report: dict) -> list:
             shortlist, settings.user_agent, settings.http_timeout, settings.fulltext_max_chars
         )
 
-    # Enrichissement KEV / EPSS puis re-scoring sur données complètes.
+    # KEV / EPSS enrichment, then re-scoring on the full data.
     await enricher.enrich(shortlist)
     for article in shortlist:
         article.score, article.reasons = filters.score_article(
@@ -133,8 +132,8 @@ async def collect(report: dict) -> list:
 
     retained = [a for a in shortlist if a.score >= settings.min_score]
 
-    # Un candidat déjà en file voit son score mis à jour : une CVE peut
-            # entrer au KEV entre deux cycles.
+    # A candidate already in the queue has its score refreshed: a CVE can
+    # enter KEV between two cycles.
     added = 0
     for article in retained:
         if queue.add(article, state_mod.url_hash(article.url)):
@@ -144,7 +143,7 @@ async def collect(report: dict) -> list:
     report["queued"] = added
     report["queue_size"] = len(queue)
     log.info(
-        "Collecte : %d articles → %d en file (%d nouveaux, file = %d)",
+        "Collection: %d articles -> %d queued (%d new, queue = %d)",
         len(articles), len(retained), added, len(queue),
     )
     return retained
@@ -158,13 +157,13 @@ async def publish_selection(
     candidates: int | None = None,
 ) -> int:
     """
-    Résume puis publie une sélection déjà arbitrée, et retire de la file
-    les articles réellement publiés.
+    Summarizes then publishes an already-arbitrated selection, and removes
+    the actually-published articles from the queue.
     """
     if not selection:
         return 0
 
-    log.info("Résumé de %d article(s) via %s…", len(selection), settings.ai_provider)
+    log.info("Summarizing %d article(s) via %s...", len(selection), settings.ai_provider)
     summarized, deferred = await summarizer.summarize_many(selection)
     report["deferred"] = report.get("deferred", 0) + len(deferred)
 
@@ -179,8 +178,8 @@ async def publish_selection(
         candidates=candidates,
     )
 
-    # Seuls les articles réellement partis sont mémorisés et retirés de la
-    # file. Un envoi échoué reste candidat pour le prochain arbitrage.
+    # Only articles that actually went out are recorded and removed from
+    # the queue. A failed send stays a candidate for the next arbitration.
     for article, summary in posted:
         state.mark_published(article.url, article.title, article.source, summary.severity)
     queue.remove([state_mod.url_hash(a.url) for a, _ in posted])
@@ -191,11 +190,11 @@ async def publish_selection(
 
 async def run_cycle(channel: discord.abc.Messageable, force_digest: bool = False) -> dict:
     """
-    Un cycle complet.
+    A full cycle.
 
-    Collecte toujours ; ne publie que dans deux cas : une urgence avérée,
-    ou l'heure du digest quotidien. C'est ce découplage qui permet de tenir
-    2-3 articles par jour tout en surveillant les flux toutes les heures.
+    Always collects; only publishes in two cases: a confirmed urgent alert,
+    or daily digest time. This split is what makes it possible to hold to
+    2-4 articles a day while still watching feeds every hour.
     """
     async with cycle_lock:
         report = {
@@ -203,13 +202,13 @@ async def run_cycle(channel: discord.abc.Messageable, force_digest: bool = False
             "urgent": 0, "digest": 0, "posted": 0, "deferred": 0, "error": None,
         }
         try:
-            # Poids appris rafraîchis AVANT la collecte : le scoring des
-            # nouveaux articles doit tenir compte des votes les plus récents.
+            # Learned weights refreshed BEFORE collection: scoring new
+            # articles must reflect the most recent votes.
             await refresh_feedback(channel)
 
             await collect(report)
 
-            # --- Voie 1 : urgences, publiées immédiatement et hors quota ---
+            # --- Path 1: urgent alerts, published immediately and outside the quota ---
             if settings.enable_urgent:
                 slots = budget.urgent_slots_left(settings.urgent_daily_max)
                 urgent, reasons = [], {}
@@ -222,49 +221,49 @@ async def run_cycle(channel: discord.abc.Messageable, force_digest: bool = False
                         if len(urgent) >= slots:
                             break
                 if urgent:
-                    log.warning("Publication urgente de %d article(s)", len(urgent))
+                    log.warning("Urgent publication of %d article(s)", len(urgent))
                     sent = await publish_selection(channel, urgent, report, reasons)
                     budget.note_urgent(sent)
                     report["urgent"] = sent
 
-            # --- Voie 2 : digest quotidien ---
+            # --- Path 2: daily digest ---
             if force_digest or budget.digest_due():
-                # Sélection relative : les N meilleurs du jour, pas ceux qui
-                # dépassent une barre absolue (impossible à calibrer).
+                # Relative selection: the top N of the day, not whatever
+                # clears a fixed bar (impossible to calibrate).
                 ranked = [article for _, article in queue.ranked()]
 
-                # Plancher bas : il n'écarte que le hors-sujet manifeste.
-                pertinents = [
+                # Low floor: it only screens out obviously off-topic articles.
+                relevant = [
                     a for a in ranked if a.score >= settings.digest_floor_score
                 ]
-                chosen = pertinents[: settings.daily_quota]
+                chosen = relevant[: settings.daily_quota]
 
-                # Anti-silence : journée calme = veille courte, pas absente.
-                # Le plafond prime toujours (min() contre un réglage incohérent).
-                objectif = min(settings.digest_min_articles, settings.daily_quota)
-                if len(chosen) < objectif and ranked:
-                    complement = [a for a in ranked if a not in chosen]
-                    manquant = objectif - len(chosen)
-                    chosen += complement[:manquant]
-                    if complement[:manquant]:
+                # Anti-silence: a quiet day means a short watch, not no
+                # watch. The cap always wins (min() against an inconsistent setting).
+                target = min(settings.digest_min_articles, settings.daily_quota)
+                if len(chosen) < target and ranked:
+                    remainder = [a for a in ranked if a not in chosen]
+                    missing = target - len(chosen)
+                    chosen += remainder[:missing]
+                    if remainder[:missing]:
                         log.info(
-                            "Journée calme : %d article(s) ajouté(s) sous le "
-                            "plancher pour maintenir la cadence",
-                            len(complement[:manquant]),
+                            "Quiet day: %d article(s) added below the floor "
+                            "to keep up the pace",
+                            len(remainder[:missing]),
                         )
 
                 if chosen:
                     log.info(
-                        "Digest quotidien : %d article(s) retenus sur %d en file "
-                        "(scores : %s)",
+                        "Daily digest: %d article(s) selected out of %d queued "
+                        "(scores: %s)",
                         len(chosen), len(queue), [a.score for a in chosen],
                     )
                     report["digest"] = await publish_selection(
                         channel, chosen, report, candidates=len(ranked)
                     )
                 else:
-                    # Seul cas de silence désormais possible : file vide.
-                    log.info("Digest quotidien : file vide, rien à publier.")
+                    # The only remaining possible case of silence: an empty queue.
+                    log.info("Daily digest: queue is empty, nothing to publish.")
                 budget.note_digest()
 
             report["queue_size"] = len(queue)
@@ -272,27 +271,27 @@ async def run_cycle(channel: discord.abc.Messageable, force_digest: bool = False
             return report
 
         except Exception as exc:
-            log.exception("Cycle en échec")
+            log.exception("Cycle failed")
             report["error"] = f"{type(exc).__name__}: {exc}"
             state.log_run(**report)
             return report
 
 
 async def resolve_channel():
-    """Récupère le salon de publication (cache local, sinon appel API)."""
+    """Fetches the publishing channel (local cache, else an API call)."""
     channel = bot.get_channel(settings.channel_id)
     if channel is not None:
         return channel
     try:
         return await bot.fetch_channel(settings.channel_id)
     except discord.DiscordException as exc:
-        log.error("Salon %s inaccessible : %s", settings.channel_id, exc)
+        log.error("Channel %s unreachable: %s", settings.channel_id, exc)
         return None
 
 
 @tasks.loop(minutes=settings.interval_minutes)
 async def scheduled_watch():
-    """Boucle automatique. Le premier tour part juste après la connexion."""
+    """Automatic loop. The first run starts right after connecting."""
     channel = await resolve_channel()
     if channel is None:
         return
@@ -304,31 +303,31 @@ async def before_watch():
     await bot.wait_until_ready()
 
 
-# --- Cycle de vie ---
+# --- Lifecycle ---
 @bot.event
 async def setup_hook():
-    """Synchronisation des commandes slash, avant la connexion au gateway."""
+    """Slash command sync, run before connecting to the gateway."""
     if settings.guild_id:
         guild = discord.Object(id=settings.guild_id)
         bot.tree.copy_global_to(guild=guild)
         await bot.tree.sync(guild=guild)
-        log.info("Commandes slash synchronisées sur le serveur %s", settings.guild_id)
+        log.info("Slash commands synced to guild %s", settings.guild_id)
     else:
         await bot.tree.sync()
-        log.info("Commandes slash synchronisées globalement (propagation : jusqu'à 1 h)")
+        log.info("Slash commands synced globally (propagation: up to 1h)")
 
 
 @bot.event
 async def on_ready():
-    log.info("Connecté en tant que %s (id=%s)", bot.user, bot.user.id)
+    log.info("Logged in as %s (id=%s)", bot.user, bot.user.id)
 
-    # on_ready se redéclenche à chaque reconnexion. Tout ce qui suit doit
-    # donc être idempotent — State.prime_from_channel l'est, la boucle aussi.
+    # on_ready fires again on every reconnect. Everything below must
+    # therefore be idempotent — State.prime_from_channel is, and so is the loop.
     if not state.primed:
         log.info(
-            "Config : %d flux · %d min · IA=%s · max %d articles/cycle · rétention %d j",
+            "Config: %d feeds · %d min · AI=%s · daily quota %d · retention %dd",
             len(settings.feeds), settings.interval_minutes, settings.ai_provider,
-            settings.max_articles_per_run, settings.retention_days,
+            settings.daily_quota, settings.retention_days,
         )
         channel = await resolve_channel()
         if channel is not None:
@@ -337,8 +336,8 @@ async def on_ready():
             )
         else:
             log.warning(
-                "Salon %s introuvable : l'index démarre vide, des articles récents "
-                "peuvent être republiés une fois.",
+                "Channel %s not found: index starts empty, recent articles "
+                "may be republished once.",
                 settings.channel_id,
             )
 
@@ -346,108 +345,108 @@ async def on_ready():
         scheduled_watch.start()
 
 
-# --- Commandes slash ---
+# --- Slash commands ---
 @bot.tree.command(
     name="cyber-now",
-    description="Collecte immédiate, et publie le digest du jour s'il n'est pas déjà parti",
+    description="Collect immediately, and publish today's digest if it hasn't gone out yet",
 )
 @app_commands.checks.cooldown(1, 120.0)
 async def cyber_now(interaction: discord.Interaction):
     if cycle_lock.locked():
-        await interaction.response.send_message("⏳ Un cycle est déjà en cours.", ephemeral=True)
+        await interaction.response.send_message("⏳ A cycle is already running.", ephemeral=True)
         return
 
-    # Un cycle dépasse largement les 3 s accordées pour répondre.
+    # A cycle far exceeds the 3s allowed to respond.
     await interaction.response.defer(thinking=True)
     report = await run_cycle(interaction.channel)
 
     if report["error"]:
-        message = f"❌ Erreur : `{report['error'][:300]}`"
+        message = f"❌ Error: `{report['error'][:300]}`"
     elif report["posted"]:
         parts = []
         if report["urgent"]:
-            parts.append(f"🚨 {report['urgent']} alerte(s) urgente(s)")
+            parts.append(f"🚨 {report['urgent']} urgent alert(s)")
         if report["digest"]:
-            parts.append(f"📰 {report['digest']} article(s) au digest")
+            parts.append(f"📰 {report['digest']} article(s) in the digest")
         message = "✅ " + " · ".join(parts)
         if report["deferred"]:
-            message += f" · ⏸️ {report['deferred']} reporté(s), quota IA"
+            message += f" · ⏸️ {report['deferred']} deferred, AI quota"
     else:
         message = (
-            f"✅ Collecte faite : {report['fetched']} articles analysés, "
-            f"{report['queue_size']} en file. "
+            f"✅ Collection done: {report['fetched']} articles analyzed, "
+            f"{report['queue_size']} queued. "
         )
         if budget.last_digest_date == budget.today_key():
-            message += "Le digest du jour est déjà parti."
+            message += "Today's digest has already gone out."
         else:
-            message += f"Digest prévu <t:{int(budget.next_digest_at().timestamp())}:R>."
+            message += f"Digest expected <t:{int(budget.next_digest_at().timestamp())}:R>."
     await interaction.followup.send(message)
 
 
 @bot.tree.command(
     name="cyber-digest",
-    description="Force l'envoi du digest maintenant, sans attendre l'heure prévue",
+    description="Force the digest to be sent now, without waiting for its scheduled time",
 )
 @app_commands.checks.cooldown(1, 300.0)
 async def cyber_digest(interaction: discord.Interaction):
     """
-    Utile pour tester le rendu, ou récupérer un digest après une coupure.
-    Ne contourne pas le seuil de qualité : si rien ne dépasse
-    DIGEST_MIN_SCORE, rien n'est publié.
+    Useful for testing the output, or catching up after downtime. Doesn't
+    bypass the quality floor: if nothing clears DIGEST_FLOOR_SCORE, nothing
+    is published.
     """
     if cycle_lock.locked():
-        await interaction.response.send_message("⏳ Un cycle est déjà en cours.", ephemeral=True)
+        await interaction.response.send_message("⏳ A cycle is already running.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
     report = await run_cycle(interaction.channel, force_digest=True)
 
     if report["error"]:
-        await interaction.followup.send(f"❌ Erreur : `{report['error'][:300]}`")
+        await interaction.followup.send(f"❌ Error: `{report['error'][:300]}`")
     elif report["digest"]:
-        await interaction.followup.send(f"✅ Digest envoyé : {report['digest']} article(s).")
+        await interaction.followup.send(f"✅ Digest sent: {report['digest']} article(s).")
     else:
         await interaction.followup.send(
-            "File vide : rien n'a encore été collecté depuis le dernier digest. "
-            "Le prochain cycle de collecte la remplira."
+            "Queue is empty: nothing has been collected since the last digest yet. "
+            "The next collection cycle will fill it."
         )
 
 
 @bot.tree.command(
     name="cyber-queue",
-    description="Affiche les candidats en lice pour le prochain digest",
+    description="Shows the candidates in the running for the next digest",
 )
 async def cyber_queue(interaction: discord.Interaction):
-    """Rend l'arbitrage transparent : ce qui passerait, ce qui serait écarté."""
+    """Makes the arbitration transparent: what would pass, what would be dropped."""
     ranked = queue.ranked()
     if not ranked:
         await interaction.response.send_message(
-            "File vide. Le prochain cycle de collecte la remplira.", ephemeral=True
+            "Queue is empty. The next collection cycle will fill it.", ephemeral=True
         )
         return
 
     lines = []
     for rank, (_, article) in enumerate(ranked[:12], start=1):
-        # La sélection est relative : le rang décide, pas le score absolu.
+        # Selection is relative: rank decides, not the absolute score.
         if rank <= settings.daily_quota and article.score >= settings.digest_floor_score:
             marker = "✅"
         elif rank <= settings.digest_min_articles:
-            marker = "🟨"  # repêché par la garantie anti-silence
+            marker = "🟨"  # rescued by the anti-silence guarantee
         elif article.score >= settings.digest_floor_score:
-            marker = "🔸"  # pertinent, mais hors quota
+            marker = "🔸"  # relevant, but outside the quota
         else:
-            marker = "▫️"  # sous le plancher de pertinence
+            marker = "▫️"  # below the relevance floor
         kev = " · KEV" if getattr(article, "kev_cves", None) else ""
         lines.append(f"{marker} `{article.score:>3}` {article.title[:70]}{kev}")
 
     embed = discord.Embed(
-        title=f"🗳️ File d'attente — {len(ranked)} candidat(s)",
+        title=f"🗳️ Queue — {len(ranked)} candidate(s)",
         description="\n".join(lines),
         color=0x5865F2,
     )
     embed.set_footer(
         text=(
-            f"✅ passerait au digest (top {settings.daily_quota}) · 🟨 repêché "
-            f"anti-silence · 🔸 pertinent hors quota · ▫️ sous le plancher "
+            f"✅ would make the digest (top {settings.daily_quota}) · 🟨 rescued "
+            f"by anti-silence · 🔸 relevant but outside quota · ▫️ below the floor "
             f"({settings.digest_floor_score})"
         )
     )
@@ -456,19 +455,19 @@ async def cyber_queue(interaction: discord.Interaction):
 
 @bot.tree.command(
     name="cyber-feedback",
-    description="Ce que le bot a appris de tes votes 👍 / 👎",
+    description="What the bot has learned from your 👍 / 👎 votes",
 )
 async def cyber_feedback(interaction: discord.Interaction):
     """
-    Transparence de la boucle d'apprentissage.
+    Transparency for the learning loop.
 
-    Une pondération apprise qu'on ne peut pas inspecter est impossible à
-    déboguer et impossible à faire confiance : cette commande montre
-    exactement quels signaux ont été ajustés, sur quel volume de votes.
+    Learned weighting you can't inspect is impossible to debug and
+    impossible to trust: this command shows exactly which signals were
+    adjusted, and on how many votes.
     """
     if not settings.enable_feedback:
         await interaction.response.send_message(
-            "La boucle de feedback est désactivée (`ENABLE_FEEDBACK=false`).",
+            "The feedback loop is disabled (`ENABLE_FEEDBACK=false`).",
             ephemeral=True,
         )
         return
@@ -477,92 +476,92 @@ async def cyber_feedback(interaction: discord.Interaction):
     await refresh_feedback(interaction.channel, force=True)
 
     embed = discord.Embed(
-        title="🎓 Poids appris depuis tes votes",
+        title="🎓 Weights learned from your votes",
         color=0x5865F2,
         description=(
-            f"**{learned.votes_seen}** vote(s) sur **{learned.articles_voted}** "
-            f"article(s), fenêtre {settings.feedback_lookback_days} j."
+            f"**{learned.votes_seen}** vote(s) across **{learned.articles_voted}** "
+            f"article(s), {settings.feedback_lookback_days}-day window."
         ),
     )
 
     if not learned.is_active:
         embed.add_field(
-            name="Aucun ajustement actif",
+            name="No active adjustment",
             value=(
-                f"Il faut au moins **{settings.feedback_min_votes} votes** sur un "
-                "même signal avant qu'il ne soit ajusté. Réagis 👍 ou 👎 sous les "
-                "articles publiés — le bot pose les deux réactions pour toi."
+                f"At least **{settings.feedback_min_votes} votes** on the same "
+                "signal are needed before it gets adjusted. React with 👍 or 👎 "
+                "on published articles — the bot pre-posts both reactions for you."
             ),
             inline=False,
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
-    signaux = learned.top_signals(8)
-    if signaux:
-        lignes = [
-            f"`{delta:+d}` **{nom}** — {t.up}👍 / {t.down}👎"
-            for nom, t, delta in signaux
+    top_signals = learned.top_signals(8)
+    if top_signals:
+        lines = [
+            f"`{delta:+d}` **{name}** — {t.up}👍 / {t.down}👎"
+            for name, t, delta in top_signals
         ]
-        embed.add_field(name="Signaux", value="\n".join(lignes), inline=False)
+        embed.add_field(name="Signals", value="\n".join(lines), inline=False)
 
-    sources_ = learned.top_sources(5)
-    if sources_:
-        lignes = [
-            f"`{delta:+d}` **{nom}** — {t.up}👍 / {t.down}👎"
-            for nom, t, delta in sources_
+    top_sources = learned.top_sources(5)
+    if top_sources:
+        lines = [
+            f"`{delta:+d}` **{name}** — {t.up}👍 / {t.down}👎"
+            for name, t, delta in top_sources
         ]
-        embed.add_field(name="Sources", value="\n".join(lignes), inline=False)
+        embed.add_field(name="Sources", value="\n".join(lines), inline=False)
 
     embed.set_footer(
         text=(
-            f"Ajustement borné à ±{settings.feedback_max_adjustment} par signal. "
-            "Les signaux factuels (KEV, EPSS, CVE, CVSS) ne sont jamais ajustés."
+            f"Adjustment capped at ±{settings.feedback_max_adjustment} per signal. "
+            "Factual signals (KEV, EPSS, CVE, CVSS) are never adjusted."
         )
     )
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="cyber-status", description="État du bot et dernier cycle")
+@bot.tree.command(name="cyber-status", description="Bot status and last cycle")
 async def cyber_status(interaction: discord.Interaction):
-    embed = discord.Embed(title="📊 État de la veille", color=0x5865F2)
-    embed.add_field(name="Flux actifs", value=str(len(settings.feeds)), inline=True)
-    embed.add_field(name="Collecte", value=f"toutes les {settings.interval_minutes} min", inline=True)
-    embed.add_field(name="Moteur IA", value=settings.ai_provider, inline=True)
+    embed = discord.Embed(title="📊 Watch status", color=0x5865F2)
+    embed.add_field(name="Active feeds", value=str(len(settings.feeds)), inline=True)
+    embed.add_field(name="Collection", value=f"every {settings.interval_minutes} min", inline=True)
+    embed.add_field(name="AI engine", value=settings.ai_provider, inline=True)
 
-    # Le budget quotidien est l'information la plus utile au quotidien.
+    # The daily budget is the single most useful piece of info day to day.
     digest_done = budget.last_digest_date == budget.today_key()
     embed.add_field(
-        name="Budget du jour",
+        name="Today's budget",
         value=(
-            f"{settings.daily_quota} max à {settings.digest_hour:02d}h · "
-            + ("déjà envoyé" if digest_done else f"<t:{int(budget.next_digest_at().timestamp())}:R>")
+            f"{settings.daily_quota} max at {settings.digest_hour:02d}:00 · "
+            + ("already sent" if digest_done else f"<t:{int(budget.next_digest_at().timestamp())}:R>")
         ),
         inline=True,
     )
     embed.add_field(
-        name="File d'attente",
+        name="Queue",
         value=(
-            f"{len(queue)} candidat(s)"
+            f"{len(queue)} candidate(s)"
             + (f" · top {queue.top_scores(3)}" if len(queue) else "")
         ),
         inline=True,
     )
     embed.add_field(
-        name="Urgences aujourd'hui",
+        name="Urgent alerts today",
         value=f"{budget.urgent_count_today()} / {settings.urgent_daily_max}",
         inline=True,
     )
     embed.add_field(name="CISA KEV", value=enricher.status(), inline=True)
     embed.add_field(
-        name=f"Publiés ({settings.retention_days} j)",
+        name=f"Published ({settings.retention_days}d)",
         value=str(state.count_published(settings.retention_days)),
         inline=True,
     )
     embed.add_field(
         name="Index",
-        value=f"mémoire · {state.memory_footprint()}"
-        + ("" if state.primed else " · ⚠️ non amorcé"),
+        value=f"in-memory · {state.memory_footprint()}"
+        + ("" if state.primed else " · ⚠️ not primed"),
         inline=True,
     )
     embed.add_field(name="Uptime", value=state.uptime(), inline=True)
@@ -570,7 +569,7 @@ async def cyber_status(interaction: discord.Interaction):
     unhealthy = state.unhealthy_feeds(settings.feed_failure_threshold)
     if unhealthy:
         embed.add_field(
-            name="🔴 Flux en panne",
+            name="🔴 Feeds down",
             value="\n".join(f"• {f.name} ({f.consecutive_failures} cycles)" for f in unhealthy)[:1024],
             inline=False,
         )
@@ -579,29 +578,29 @@ async def cyber_status(interaction: discord.Interaction):
     if last:
         value = (
             f"<t:{last['started_at']}:R>\n"
-            f"{last['fetched']} collectés · {last.get('queued', 0)} mis en file · "
-            f"{last['posted']} publiés"
+            f"{last['fetched']} collected · {last.get('queued', 0)} queued · "
+            f"{last['posted']} published"
         )
         if last.get("deferred"):
-            value += f" · {last['deferred']} reportés"
+            value += f" · {last['deferred']} deferred"
         if last.get("error"):
             value += f"\n⚠️ `{last['error'][:150]}`"
-        embed.add_field(name="Dernier cycle", value=value, inline=False)
+        embed.add_field(name="Last cycle", value=value, inline=False)
     else:
-        embed.add_field(name="Dernier cycle", value="aucun pour l'instant", inline=False)
+        embed.add_field(name="Last cycle", value="none yet", inline=False)
 
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="cyber-sources", description="Flux surveillés et leur santé")
+@bot.tree.command(name="cyber-sources", description="Watched feeds and their health")
 async def cyber_sources(interaction: discord.Interaction):
     lines = state.feed_report(settings.feed_failure_threshold)
     if not lines:
-        lines = [f"• **{f['name']}** (poids {f['weight']}) — pas encore interrogé"
+        lines = [f"• **{f['name']}** (weight {f['weight']}) — not queried yet"
                  for f in settings.feeds]
     await interaction.response.send_message(
         embed=discord.Embed(
-            title="📡 Flux surveillés",
+            title="📡 Watched feeds",
             description="\n".join(lines)[:4000],
             color=0x5865F2,
         )
@@ -611,9 +610,9 @@ async def cyber_sources(interaction: discord.Interaction):
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CommandOnCooldown):
-        message = f"⏳ Trop rapide — réessaie dans {error.retry_after:.0f} s."
+        message = f"⏳ Too fast — try again in {error.retry_after:.0f}s."
     else:
-        log.error("Erreur de commande : %s", error)
+        log.error("Command error: %s", error)
         message = f"❌ `{str(error)[:300]}`"
     if interaction.response.is_done():
         await interaction.followup.send(message, ephemeral=True)
@@ -625,10 +624,10 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 def main() -> None:
     problems = settings.validate()
     if problems:
-        print("Configuration invalide :", file=sys.stderr)
+        print("Invalid configuration:", file=sys.stderr)
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
-        print("\nVérifie ton fichier .env (voir .env.example).", file=sys.stderr)
+        print("\nCheck your .env file (see .env.example).", file=sys.stderr)
         sys.exit(1)
 
     for warning in settings.warnings():

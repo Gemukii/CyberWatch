@@ -5,13 +5,15 @@ services:
     container_name: cyberwatch
     restart: unless-stopped
 
+    # All configuration comes from .env
     env_file: .env
 
-    # Nécessaire pour que DIGEST_HOUR corresponde à l'heure locale.
+    # Needed so DIGEST_HOUR matches local time.
     environment:
       - TZ=${TIMEZONE:-Europe/Paris}
 
-    # Le bot n'écrit rien : le système de fichiers peut être en lecture seule.
+    # --- Hardening ---
+    # The bot writes nothing: the filesystem can be read-only.
     read_only: true
     tmpfs:
       - /tmp:size=32m
@@ -20,14 +22,14 @@ services:
     cap_drop:
       - ALL
 
-    # --- (VPS modeste) ---
+    # --- Resource guardrails (modest VPS) ---
     deploy:
       resources:
         limits:
           memory: 384M
           cpus: "0.50"
 
-    # Logs bornés
+    # Bounded logs
     logging:
       driver: json-file
       options:

@@ -1,8 +1,8 @@
 """
-Construction et envoi des embeds Discord.
+Building and sending Discord embeds.
 
-Limites API : titre 256, description 4096, field 1024, footer 2048,
-total 6000, 10 embeds par message.
+API limits: title 256, description 4096, field 1024, footer 2048,
+total 6000, 10 embeds per message.
 """
 
 from __future__ import annotations
@@ -18,30 +18,30 @@ from summarizer import Summary
 
 log = logging.getLogger(__name__)
 
-# Code couleur par sévérité, lisible en thème sombre comme clair.
+# Color code by severity, readable in both dark and light theme.
 SEVERITY_STYLE = {
-    "Critique": (0xE01E37, "🔴"),
-    "Élevé":    (0xF07C00, "🟠"),
-    "Moyen":    (0xF2C14E, "🟡"),
-    "Faible":   (0x4C9F70, "🟢"),
+    "Critical": (0xE01E37, "🔴"),
+    "High":     (0xF07C00, "🟠"),
+    "Medium":   (0xF2C14E, "🟡"),
+    "Low":      (0x4C9F70, "🟢"),
 }
 
-# Marqueurs inscrits dans le pied des en-têtes : ils permettent à state.py de
-# reconstruire, depuis Discord seul, ce qui a déjà été publié aujourd'hui.
+# Markers written into header footers: they let state.py reconstruct, from
+# Discord alone, what's already been published today.
 DIGEST_MARKER = "#digest"
 URGENT_MARKER = "#urgent"
 
 TITLE_LIMIT = 256
 AUTHOR_LIMIT = 256
 FIELD_LIMIT = 1024
-SAFE_DESC_LIMIT = 1800   # notre plafond, très en dessous de celui de Discord
+SAFE_DESC_LIMIT = 1800   # our own cap, well under Discord's
 
-# Aucune mention ne sera jamais résolue par Discord depuis les messages du bot.
+# No mention will ever be resolved by Discord from the bot's messages.
 NO_MENTIONS = discord.AllowedMentions.none()
 
 
 def _truncate(text: str, limit: int) -> str:
-    """Tronque proprement sur un mot, avec une ellipse."""
+    """Cleanly truncates on a word boundary, with an ellipsis."""
     if len(text) <= limit:
         return text
     cut = text[: limit - 1]
@@ -54,8 +54,8 @@ def _truncate(text: str, limit: int) -> str:
 def build_embed(
     article: Article, summary: Summary, urgent_reason: str | None = None
 ) -> discord.Embed:
-    """Transforme un couple (article, résumé) en embed prêt à publier."""
-    color, emoji = SEVERITY_STYLE.get(summary.severity, SEVERITY_STYLE["Moyen"])
+    """Turns an (article, summary) pair into a ready-to-publish embed."""
+    color, emoji = SEVERITY_STYLE.get(summary.severity, SEVERITY_STYLE["Medium"])
 
     lines = [f"• {_truncate(b, 260)}" for b in summary.bullets]
     description = _truncate("\n".join(lines), SAFE_DESC_LIMIT)
@@ -72,30 +72,30 @@ def build_embed(
         ),
     )
 
-    # author.name = source + titre d'origine. Sert aussi de clé pour
-    # reconstruire l'index anti-doublons au démarrage (state.py).
+    # author.name = source + original title. Also used as the key to
+    # rebuild the anti-duplicate index on startup (state.py).
     embed.set_author(name=_truncate(f"{article.source} · {article.title}", AUTHOR_LIMIT))
 
-    embed.add_field(name="Sévérité", value=f"**{summary.severity}**", inline=True)
+    embed.add_field(name="Severity", value=f"**{summary.severity}**", inline=True)
 
-    # Signaux autoritatifs : ils valent plus qu'un adjectif dans un article.
+    # Authoritative signals: worth more than an adjective in an article.
     if article.kev_cves:
-        embed.add_field(name="CISA KEV", value="⚠️ exploitation avérée", inline=True)
+        embed.add_field(name="CISA KEV", value="⚠️ confirmed exploitation", inline=True)
     if article.epss_max is not None and article.epss_max >= 0.01:
-        embed.add_field(name="EPSS 30 j", value=f"{article.epss_max:.1%}", inline=True)
+        embed.add_field(name="EPSS 30d", value=f"{article.epss_max:.1%}", inline=True)
 
     if summary.cves:
         marked = [f"`{c}`" + ("⚠️" if c in article.kev_cves else "") for c in summary.cves]
         embed.add_field(name="CVE", value=_truncate(" · ".join(marked), FIELD_LIMIT), inline=False)
 
-    # Une tentative d'injection détectée est signalée, jamais masquée :
-    # le lecteur doit savoir que ce résumé mérite une relecture.
+    # A detected injection attempt is flagged, never hidden: the reader
+    # needs to know this summary deserves a second look.
     if summary.injection_flags:
         embed.add_field(
-            name="⚠️ Contenu suspect",
+            name="⚠️ Suspicious content",
             value=_truncate(
-                "Motifs d'injection de prompt détectés dans la source "
-                f"({', '.join(summary.injection_flags)}). Résumé à vérifier.",
+                "Prompt-injection patterns detected in the source "
+                f"({', '.join(summary.injection_flags)}). Summary should be double-checked.",
                 FIELD_LIMIT,
             ),
             inline=False,
@@ -103,13 +103,13 @@ def build_embed(
 
     if urgent_reason:
         embed.add_field(
-            name="🚨 Alerte immédiate",
+            name="🚨 Immediate alert",
             value=_truncate(urgent_reason, FIELD_LIMIT),
             inline=False,
         )
 
-    # Signaux inscrits ici : c'est ce qui rend un vote attribuable à un
-    # critère précis plutôt qu'à l'article entier.
+    # Signals recorded here: this is what makes a vote attributable to a
+    # specific criterion rather than to the whole article.
     footer = f"Score {article.score}"
     encoded = encode_signals(getattr(article, "signals", []) or [])
     if encoded:
@@ -118,8 +118,8 @@ def build_embed(
         footer += f" · {URGENT_MARKER}"
     if summary.tags:
         footer += " · " + " ".join(f"#{t}" for t in summary.tags)
-    if summary.generated_by == "heuristique":
-        footer += " · résumé sans IA"
+    if summary.generated_by == "heuristic":
+        footer += " · summary without AI"
     embed.set_footer(text=_truncate(footer, 300))
 
     return embed
@@ -134,38 +134,38 @@ def build_header_embed(
     candidates: int | None = None,
 ) -> discord.Embed:
     """
-    En-tête récapitulatif.
+    Summary header.
 
-    Deux formes : l'alerte immédiate, et le digest quotidien qui annonce
-    combien de candidats ont été écartés — c'est cette ligne qui rend la
-    sélectivité visible au lecteur.
+    Two forms: the immediate alert, and the daily digest which reports how
+    many candidates were dropped — that line is what makes the bot's
+    selectivity visible to the reader.
     """
-    plural = "s" if count > 1 else ""
     if urgent:
+        vuln_plural = "ies" if count > 1 else "y"
         return discord.Embed(
-            title="🚨 Alerte cyber immédiate",
+            title="🚨 Immediate cyber alert",
             description=(
-                f"**{count}** vulnérabilité{plural} à exploitation avérée ou "
-                "hautement probable, publiée hors du digest quotidien."
+                f"**{count}** vulnerabilit{vuln_plural} with confirmed or highly "
+                "likely exploitation, published outside the daily digest."
             ),
             color=0xE01E37,
             timestamp=datetime.now(tz=timezone.utc),
-        ).set_footer(text=f"Résumés : {provider} · {URGENT_MARKER}")
+        ).set_footer(text=f"Summaries: {provider} · {URGENT_MARKER}")
 
-    description = f"**{count}** article{plural} retenu{plural} aujourd'hui."
+    description = f"**{count}** article{'s' if count != 1 else ''} selected today."
     if quota:
-        description += f" Plafond quotidien : {quota}."
+        description += f" Daily cap: {quota}."
     if candidates and candidates > count:
-        description += f"\n{candidates - count} autre(s) candidat(s) écarté(s) après arbitrage."
+        description += f"\n{candidates - count} other candidate(s) dropped after arbitration."
     if deferred:
-        description += f"\n⏸️ {deferred} reporté(s) au prochain cycle (quota IA)."
+        description += f"\n⏸️ {deferred} deferred to the next cycle (AI quota)."
 
     return discord.Embed(
-        title="🛡️ Veille cyber — digest du jour",
+        title="🛡️ Cyber watch — today's digest",
         description=description,
         color=0x5865F2,
         timestamp=datetime.now(tz=timezone.utc),
-    ).set_footer(text=f"Résumés : {provider} · {DIGEST_MARKER}")
+    ).set_footer(text=f"Summaries: {provider} · {DIGEST_MARKER}")
 
 
 async def publish(
@@ -180,29 +180,28 @@ async def publish(
     add_vote_reactions: bool = True,
 ) -> list[tuple[Article, Summary]]:
     """
-    Envoie les embeds et retourne **uniquement** les articles réellement
-    publiés.
+    Sends the embeds and returns **only** the articles that were actually
+    published.
 
-    C'est important : seuls ces articles doivent être marqués comme vus.
-    Un embed dont l'envoi échoue doit rester candidat au cycle suivant,
-    sinon il est perdu définitivement.
+    This matters: only those articles should be marked as seen. An embed
+    whose send fails must remain a candidate for the next cycle, or it's
+    lost for good.
 
-    Un message par article : plus lisible dans le fil, et permet de réagir
-    ou d'ouvrir un fil article par article. discord.py gère lui-même le
-    rate limit entre les envois.
+    One message per article: easier to read in the channel, and lets
+    people react or open a thread per article. discord.py handles rate
+    limiting between sends on its own.
     """
     if not items:
         return []
 
-    from state import url_hash  # import local : évite une dépendance circulaire
+    from state import url_hash  # local import: avoids a circular dependency
 
     urgent_reasons = urgent_reasons or {}
     is_urgent_batch = bool(urgent_reasons)
     posted: list[tuple[Article, Summary]] = []
 
-    # La mention n'est autorisée que pour les alertes urgentes, et seulement
-    # si elle est explicitement configurée. Le digest quotidien ne notifie
-    # jamais personne.
+    # A mention is only allowed for urgent alerts, and only when explicitly
+    # configured. The daily digest never pings anyone.
     content, allowed = None, NO_MENTIONS
     if is_urgent_batch and mention and mention.lower() != "none":
         if mention.lower() == "here":
@@ -221,7 +220,7 @@ async def publish(
             allowed_mentions=allowed,
         )
     except discord.HTTPException as exc:
-        log.warning("En-tête non publié : %s", exc)
+        log.warning("Header not published: %s", exc)
 
     for article, summary in items:
         try:
@@ -232,17 +231,17 @@ async def publish(
             )
             posted.append((article, summary))
         except discord.HTTPException as exc:
-            # Non marqué comme publié : il reviendra au prochain cycle.
-            log.error("Échec de publication pour %s : %s", article.url, exc)
+            # Not marked as published: it will come back next cycle.
+            log.error("Failed to publish %s: %s", article.url, exc)
             continue
 
-        # Réactions pré-posées : voter en un tap. Un échec n'est pas grave,
-        # l'article est déjà publié.
+        # Pre-posted reactions: voting is a single tap. A failure here
+        # isn't serious, the article is already published.
         if add_vote_reactions:
             for emoji in (UPVOTE, DOWNVOTE):
                 try:
                     await message.add_reaction(emoji)
                 except discord.HTTPException as exc:
-                    log.debug("Réaction %s non posée : %s", emoji, exc)
-                    break  # permission manquante : inutile d'insister
+                    log.debug("Reaction %s not posted: %s", emoji, exc)
+                    break  # missing permission: no point retrying
     return posted

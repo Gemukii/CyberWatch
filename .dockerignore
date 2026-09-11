@@ -1,9 +1,9 @@
-# Secrets — ne doivent JAMAIS entrer dans l'image
+# Secrets
 .env
 *.env
 !.env.example
 
-# Développement
+# Dev
 tests/
 docs/
 .github/
@@ -14,7 +14,7 @@ __pycache__/
 .venv/
 venv/
 
-# Git et outillage
+# Git & tools
 .git/
 .gitignore
 *.md

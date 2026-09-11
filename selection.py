@@ -1,8 +1,8 @@
 """
-File d'attente des candidats, quotas quotidiens, arbitrage urgence/digest.
+Candidate queue, daily quotas, urgent/digest arbitration.
 
-Les articles ne sont pas publiés à l'arrivée : ils concourent entre eux et
-seuls les meilleurs de la journée sortent. Voir docs/ARCHITECTURE.md §1.
+Articles aren't published on arrival: they compete against each other and
+only the best of the day make it out. See docs/ARCHITECTURE.md §1.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 
 class CandidateQueue:
-    """File des articles en attente d'arbitrage, dédupliquée par URL."""
+    """Queue of articles awaiting arbitration, deduplicated by URL."""
 
     def __init__(self, ttl_hours: int = 36):
         self.ttl_seconds = ttl_hours * 3600
@@ -27,23 +27,23 @@ class CandidateQueue:
 
     def add(self, article, key: str) -> bool:
         """
-        Ajoute ou met à jour un candidat. Retourne True si c'est un nouveau.
+        Adds or updates a candidate. Returns True if it's new.
 
-        Un article déjà en file voit son score actualisé : le contenu a pu
-        s'enrichir entre-temps (ajout au KEV, score EPSS qui monte), et c'est
-        le score le plus récent qui doit arbitrer.
+        An article already in the queue has its score refreshed: the
+        content may have been enriched in the meantime (added to KEV, EPSS
+        score going up), and it's the most recent score that should decide.
         """
         is_new = key not in self._items
         if not is_new:
             previous, first_seen = self._items[key]
             if getattr(article, "score", 0) >= getattr(previous, "score", 0):
-                self._items[key] = (article, first_seen)  # on garde la date d'entrée
+                self._items[key] = (article, first_seen)  # keep the original entry time
             return False
         self._items[key] = (article, time.time())
         return True
 
     def purge(self, max_age_hours: int | None = None) -> int:
-        """Retire les candidats trop vieux pour être encore d'actualité."""
+        """Removes candidates too old to still be newsworthy."""
         ttl = (max_age_hours * 3600) if max_age_hours else self.ttl_seconds
         cutoff = time.time() - ttl
         expired = [k for k, (_, ts) in self._items.items() if ts < cutoff]
@@ -56,7 +56,7 @@ class CandidateQueue:
             self._items.pop(key, None)
 
     def ranked(self) -> list[tuple[str, object]]:
-        """Candidats triés par score décroissant, meilleur en tête."""
+        """Candidates sorted by descending score, best first."""
         return [
             (key, article)
             for key, (article, _) in sorted(
@@ -72,17 +72,17 @@ class CandidateQueue:
 
 class DailyBudget:
     """
-    Suit ce qui a été publié aujourd'hui et décide s'il est l'heure du digest.
+    Tracks what's been published today and decides when the digest is due.
 
-    La journée est calculée dans le fuseau de l'utilisateur, pas en UTC :
-    un digest « à 8 h » doit tomber à 8 h locales, y compris en heure d'été.
+    The day is computed in the user's timezone, not UTC: a digest "at 8am"
+    must land at 8am local time, including during daylight saving shifts.
     """
 
     def __init__(self, timezone_name: str = "Europe/Paris", digest_hour: int = 8):
         try:
             self.tz = ZoneInfo(timezone_name)
         except Exception:
-            log.warning("Fuseau %r inconnu, repli sur UTC", timezone_name)
+            log.warning("Unknown timezone %r, falling back to UTC", timezone_name)
             self.tz = timezone.utc
         self.digest_hour = digest_hour
         self._last_digest_date: str | None = None
@@ -104,18 +104,18 @@ class DailyBudget:
         self._last_digest_date = self.today_key(moment)
 
     def note_digest_from_timestamp(self, ts: float) -> None:
-        """Utilisé à l'amorçage, en relisant l'historique Discord."""
+        """Used during startup priming, by re-reading Discord history."""
         date_key = self.today_key(datetime.fromtimestamp(ts, tz=self.tz))
         if self._last_digest_date is None or date_key > self._last_digest_date:
             self._last_digest_date = date_key
 
     def digest_due(self, moment: datetime | None = None) -> bool:
         """
-        Vrai si le digest du jour doit partir maintenant.
+        True if today's digest should go out now.
 
-        On publie dès que l'heure cible est atteinte ou dépassée : si le VPS
-        était éteint à 8 h, le digest part au premier cycle après le
-        redémarrage plutôt que d'être sauté pour la journée.
+        Publishes as soon as the target hour is reached or passed: if the
+        VPS was down at 8am, the digest goes out on the first cycle after
+        restart instead of being skipped for the day.
         """
         moment = moment or self.now()
         if moment.hour < self.digest_hour:
@@ -130,17 +130,17 @@ class DailyBudget:
         if moment >= target and self._last_digest_date == self.today_key(moment):
             target += timedelta(days=1)
         elif moment >= target:
-            return moment  # en retard : dû immédiatement
+            return moment  # overdue: due immediately
         return target
 
-    # --- Urgences ---
+    # --- Urgent alerts ---
     def urgent_count_today(self, moment: datetime | None = None) -> int:
         return self._urgent_by_date.get(self.today_key(moment), 0)
 
     def note_urgent(self, count: int = 1, moment: datetime | None = None) -> None:
         key = self.today_key(moment)
         self._urgent_by_date[key] = self._urgent_by_date.get(key, 0) + count
-        # On ne garde que quelques jours d'historique.
+        # Keep only a few days of history.
         for old in sorted(self._urgent_by_date)[:-7]:
             del self._urgent_by_date[old]
 
@@ -154,31 +154,30 @@ class DailyBudget:
 
 def is_urgent(article, settings) -> tuple[bool, str]:
     """
-    Décide si un article justifie une publication immédiate, hors quota.
+    Decides whether an article warrants immediate publication, outside the quota.
 
-    Les critères reposent sur des sources autoritatives plutôt que sur du
-    vocabulaire journalistique : une alerte qui se déclenche trop souvent
-    cesse d'être une alerte.
+    Criteria rely on authoritative sources rather than journalistic
+    language: an alert that fires too often stops being an alert.
 
-    Retourne (urgent, motif lisible).
+    Returns (urgent, human-readable reason).
     """
-    # 1. Inscrite au catalogue CISA KEV = exploitation avérée en conditions
-    #    réelles. C'est le signal le plus fort disponible gratuitement.
+    # 1. Listed in the CISA KEV catalog = confirmed exploitation in the
+    #    wild. The strongest signal available for free.
     if getattr(article, "kev_cves", None):
         cve = article.kev_cves[0]
         if getattr(article, "kev_ransomware", False):
-            return True, f"{cve} au catalogue CISA KEV — campagne de rançongiciel connue"
-        return True, f"{cve} au catalogue CISA KEV — exploitation avérée"
+            return True, f"{cve} in the CISA KEV catalog — known ransomware campaign"
+        return True, f"{cve} in the CISA KEV catalog — confirmed exploitation"
 
-    # 2. EPSS très élevé : exploitation jugée hautement probable à 30 jours.
+    # 2. Very high EPSS: exploitation judged highly likely within 30 days.
     epss = getattr(article, "epss_max", None)
     if epss is not None and epss >= settings.urgent_epss_threshold:
-        return True, f"EPSS {epss:.0%} — exploitation hautement probable sous 30 jours"
+        return True, f"EPSS {epss:.0%} — exploitation highly likely within 30 days"
 
-    # 3. Filet de sécurité : score exceptionnel, très au-dessus du seuil
-    #    habituel. Couvre les sujets sans CVE (compromission majeure,
-    #    incident de chaîne d'approvisionnement) qu'aucun catalogue ne voit.
+    # 3. Safety net: exceptional score, well above the usual threshold.
+    #    Covers CVE-less stories (major compromise, supply-chain incident)
+    #    that no catalog would otherwise catch.
     if getattr(article, "score", 0) >= settings.urgent_score_threshold:
-        return True, f"score de pertinence exceptionnel ({article.score})"
+        return True, f"exceptional relevance score ({article.score})"
 
     return False, ""

@@ -1,5 +1,5 @@
 """
-Configuration : variables d'environnement (.env) et sources RSS (feeds.yaml).
+Configuration: environment variables (.env) and RSS sources (feeds.yaml).
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# override=False : les variables déjà présentes dans l'environnement
-# (ex. injectées par systemd) l'emportent sur le .env.
+# override=False: variables already present in the environment (e.g.
+# injected by systemd) win over the .env file.
 load_dotenv(BASE_DIR / ".env", override=False)
 
 
@@ -46,174 +46,174 @@ class Settings:
     # --- Discord ---
     discord_token: str = os.getenv("DISCORD_TOKEN", "")
     channel_id: int = _env_int("DISCORD_CHANNEL_ID", 0)
-    # Si renseigné, les commandes slash sont synchronisées instantanément sur
-    # ce serveur. Sinon la synchro est globale et peut prendre jusqu'à 1 h.
+    # If set, slash commands sync instantly on this server. Otherwise sync
+    # is global and can take up to 1 hour.
     guild_id: int = _env_int("DISCORD_GUILD_ID", 0)
 
-    # --- Planification ---
-    # Fréquence de COLLECTE (gratuite). La publication, elle, est arbitrée
-    # une fois par jour : voir le budget quotidien ci-dessous.
+    # --- Scheduling ---
+    # COLLECTION frequency (free). Publishing is arbitrated once a day:
+    # see the daily budget below.
     interval_minutes: int = _env_int("INTERVAL_MINUTES", 60)
     max_age_hours: int = _env_int("MAX_AGE_HOURS", 24)
-    # Durée de vie d'un candidat dans la file d'attente.
+    # Lifetime of a candidate in the queue.
     candidate_ttl_hours: int = _env_int("CANDIDATE_TTL_HOURS", 36)
-    # Nombre d'articles poussés jusqu'à l'extraction de texte + enrichissement
-    # à chaque collecte. Étape gratuite en tokens, mais coûteuse en réseau.
+    # Number of articles pushed through text extraction + enrichment per
+    # collection cycle. Free in tokens, but network-costly.
     shortlist_limit: int = _env_int("SHORTLIST_LIMIT", 15)
 
-    # --- Budget quotidien de publication ---
-    # Sélection relative : les N meilleurs du jour, pas un seuil fixe.
+    # --- Daily publishing budget ---
+    # Relative selection: the top N of the day, not a fixed threshold.
     daily_quota: int = _env_int("DAILY_QUOTA", 4)
-    # Nombre minimal d'articles publiés, même une journée calme. Met à 0 pour
-    # autoriser les journées totalement silencieuses.
+    # Minimum number of articles published, even on a quiet day. Set to 0
+    # to allow fully silent days.
     digest_min_articles: int = _env_int("DIGEST_MIN_ARTICLES", 2)
-    # Heure locale d'envoi du digest (0-23).
+    # Local hour the digest is sent (0-23).
     digest_hour: int = _env_int("DIGEST_HOUR", 8)
     timezone_name: str = os.getenv("TIMEZONE", "Europe/Paris")
-    # Plancher de pertinence, pas barre d'excellence. Pour être plus
-    # sélectif, baisser DAILY_QUOTA plutôt que monter ce chiffre.
+    # Relevance floor, not an excellence bar. To be more selective, lower
+    # DAILY_QUOTA rather than raising this number.
     digest_floor_score: int = _env_int("DIGEST_FLOOR_SCORE", 7)
 
-    # --- Boucle de feedback (votes 👍 / 👎) ---
-    # Le bot apprend de tes réactions. Les poids sont recalculés depuis
-    # l'historique Discord, jamais stockés sur disque.
+    # --- Feedback loop (👍 / 👎 votes) ---
+    # The bot learns from your reactions. Weights are recomputed from
+    # Discord history, never stored on disk.
     enable_feedback: bool = _env_bool("ENABLE_FEEDBACK", True)
-    # Fenêtre glissante : au-delà, les votes ne comptent plus. Tes centres
-    # d'intérêt d'il y a six mois ne doivent pas figer la veille d'aujourd'hui.
+    # Sliding window: beyond it, votes no longer count. Interests from six
+    # months ago shouldn't freeze today's watch.
     feedback_lookback_days: int = _env_int("FEEDBACK_LOOKBACK_DAYS", 30)
-    # Nombre de votes requis sur un signal avant tout ajustement.
+    # Votes required on a signal before any adjustment applies.
     feedback_min_votes: int = _env_int("FEEDBACK_MIN_VOTES", 3)
-    # Ajustement maximal par signal. Volontairement modeste : le feedback
-    # module le classement, il ne le pilote pas.
+    # Maximum adjustment per signal. Deliberately modest: feedback shapes
+    # the ranking, it doesn't drive it.
     feedback_max_adjustment: int = _env_int("FEEDBACK_MAX_ADJUSTMENT", 4)
-    # Fréquence de relecture de l'historique (coûteux en appels API).
+    # How often history is re-read (costly in API calls).
     feedback_ttl_hours: int = _env_int("FEEDBACK_TTL_HOURS", 6)
     feedback_message_limit: int = _env_int("FEEDBACK_MESSAGE_LIMIT", 500)
 
-    # --- Urgences (publiées immédiatement, hors quota) ---
+    # --- Urgent alerts (published immediately, outside the quota) ---
     enable_urgent: bool = _env_bool("ENABLE_URGENT", True)
-    # Score EPSS au-delà duquel un article devient urgent (0-1).
+    # EPSS score above which an article becomes urgent (0-1).
     urgent_epss_threshold: float = _env_float("URGENT_EPSS_THRESHOLD", 0.7)
-    # Filet de sécurité pour les sujets sans CVE (compromission majeure...).
+    # Safety net for CVE-less stories (major compromise, etc.).
     urgent_score_threshold: int = _env_int("URGENT_SCORE_THRESHOLD", 30)
-    # Garde-fou anti-inondation : même une journée catastrophique reste bornée.
+    # Anti-flood guard: even a catastrophic day stays bounded.
     urgent_daily_max: int = _env_int("URGENT_DAILY_MAX", 2)
-    # Mention envoyée avec une alerte urgente : "none", "here", ou un ID de rôle.
+    # Mention sent with an urgent alert: "none", "here", or a role ID.
     urgent_mention: str = os.getenv("URGENT_MENTION", "none").strip()
 
-    # --- Filtrage ---
+    # --- Filtering ---
     min_score: int = _env_int("MIN_SCORE", 5)
     dedup_similarity: float = _env_float("DEDUP_SIMILARITY", 0.72)
 
-    # --- Enrichissement (sources publiques gratuites, sans clé) ---
-    # CISA KEV : catalogue officiel des vulnérabilités exploitées.
+    # --- Enrichment (free public sources, no key required) ---
+    # CISA KEV: official catalog of exploited vulnerabilities.
     enable_kev: bool = _env_bool("ENABLE_KEV", True)
     kev_url: str = os.getenv(
         "KEV_URL",
         "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
     )
-    # EPSS : probabilité d'exploitation à 30 jours (FIRST.org).
+    # EPSS: 30-day exploitation probability (FIRST.org).
     enable_epss: bool = _env_bool("ENABLE_EPSS", True)
     epss_url: str = os.getenv("EPSS_URL", "https://api.first.org/data/v1/epss")
     enrichment_ttl_hours: int = _env_int("ENRICHMENT_TTL_HOURS", 12)
 
-    # --- Résumé IA ---
+    # --- AI summarization ---
     ai_provider: str = os.getenv("AI_PROVIDER", "gemini").strip().lower()
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    # L'offre gratuite Gemini ne couvre plus que Flash / Flash-Lite.
+    # Gemini's free tier now only covers Flash / Flash-Lite.
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     ollama_url: str = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "qwen2.5:3b-instruct")
     ai_delay_seconds: float = _env_float("AI_DELAY_SECONDS", 7)
-    # Backoff : nombre de tentatives et attente initiale sur erreur 429.
+    # Backoff: number of retries and initial wait on a 429 error.
     ai_max_retries: int = _env_int("AI_MAX_RETRIES", 2)
     ai_backoff_seconds: float = _env_float("AI_BACKOFF_SECONDS", 30)
-    # Si le quota est épuisé : True = publier un résumé heuristique dégradé,
-    # False (défaut) = reporter l'article au prochain cycle.
+    # If the quota is exhausted: True = publish a degraded heuristic
+    # summary, False (default) = defer the article to the next cycle.
     degrade_on_quota: bool = _env_bool("DEGRADE_ON_QUOTA", False)
 
-    # --- Récupération du texte ---
+    # --- Text retrieval ---
     fetch_fulltext: bool = _env_bool("FETCH_FULLTEXT", True)
     fulltext_max_chars: int = _env_int("FULLTEXT_MAX_CHARS", 4000)
     http_timeout: int = _env_int("HTTP_TIMEOUT", 20)
     user_agent: str = os.getenv(
-        "USER_AGENT", "CyberWatchBot/2.0 (+veille cyber personnelle)"
+        "USER_AGENT", "CyberWatchBot/2.0 (+personal cyber watch)"
     )
 
-    # --- État (aucune écriture disque) ---
-    # Fenêtre anti-doublons, en jours. L'index est reconstruit au démarrage
-    # en relisant l'historique du salon Discord.
+    # --- State (no disk writes) ---
+    # Anti-duplicate window, in days. The index is rebuilt on startup by
+    # re-reading the Discord channel's history.
     retention_days: int = _env_int("RETENTION_DAYS", 7)
-    # Plafond de sécurité sur le nombre de messages relus. 0 = pas de plafond,
-    # seule la fenêtre RETENTION_DAYS borne la lecture (recommandé).
+    # Safety cap on the number of messages re-read. 0 = no cap, only
+    # RETENTION_DAYS bounds the read (recommended).
     history_limit: int = _env_int("HISTORY_LIMIT", 0)
-    # Alerte si un flux ne remonte rien pendant N cycles consécutifs.
+    # Alert if a feed returns nothing for N consecutive cycles.
     feed_failure_threshold: int = _env_int("FEED_FAILURE_THRESHOLD", 3)
 
     feeds_path: Path = BASE_DIR / os.getenv("FEEDS_FILE", "feeds.yaml")
     feeds: list[dict] = field(default_factory=list)
 
     def validate(self) -> list[str]:
-        """Retourne la liste des problèmes bloquants (vide si tout va bien)."""
+        """Returns the list of blocking problems (empty if all is well)."""
         problems = []
         if not self.discord_token:
-            problems.append("DISCORD_TOKEN est vide.")
+            problems.append("DISCORD_TOKEN is empty.")
         if not self.channel_id:
-            problems.append("DISCORD_CHANNEL_ID est vide ou invalide.")
+            problems.append("DISCORD_CHANNEL_ID is empty or invalid.")
         if self.ai_provider not in {"gemini", "ollama", "none"}:
-            problems.append(f"AI_PROVIDER inconnu : {self.ai_provider!r}")
+            problems.append(f"Unknown AI_PROVIDER: {self.ai_provider!r}")
         if self.ai_provider == "gemini" and not self.gemini_api_key:
             problems.append(
-                "AI_PROVIDER=gemini mais GEMINI_API_KEY est vide "
-                "(utilise AI_PROVIDER=none pour tester sans IA)."
+                "AI_PROVIDER=gemini but GEMINI_API_KEY is empty "
+                "(use AI_PROVIDER=none to test without AI)."
             )
         if not self.feeds:
-            problems.append("Aucun flux RSS actif dans feeds.yaml.")
+            problems.append("No active RSS feed in feeds.yaml.")
         if not 0 < self.dedup_similarity <= 1:
-            problems.append("DEDUP_SIMILARITY doit être dans ]0, 1].")
+            problems.append("DEDUP_SIMILARITY must be in ]0, 1].")
         if not 0 <= self.digest_hour <= 23:
-            problems.append("DIGEST_HOUR doit être entre 0 et 23.")
+            problems.append("DIGEST_HOUR must be between 0 and 23.")
         if self.daily_quota < 1:
-            problems.append("DAILY_QUOTA doit valoir au moins 1.")
+            problems.append("DAILY_QUOTA must be at least 1.")
         if not 0 < self.urgent_epss_threshold <= 1:
-            problems.append("URGENT_EPSS_THRESHOLD doit être dans ]0, 1].")
+            problems.append("URGENT_EPSS_THRESHOLD must be in ]0, 1].")
         return problems
 
     def warnings(self) -> list[str]:
-        """Problèmes non bloquants, signalés au démarrage."""
+        """Non-blocking issues, reported at startup."""
         warns = []
-        # Volume quotidien maximal : digest (quota + en-tête) + urgences.
+        # Max daily message volume: digest (quota + header) + urgent alerts.
         est_messages = (
             self.daily_quota + 1 + self.urgent_daily_max
         ) * self.retention_days
         if 0 < self.history_limit < est_messages:
             warns.append(
-                f"HISTORY_LIMIT={self.history_limit} est inférieur au volume estimé "
-                f"({est_messages:.0f} messages sur {self.retention_days} j) : "
-                "l'index anti-doublons pourrait être incomplet. Utilise 0 (illimité)."
+                f"HISTORY_LIMIT={self.history_limit} is below the estimated volume "
+                f"({est_messages:.0f} messages over {self.retention_days}d): "
+                "the anti-duplicate index could be incomplete. Use 0 (unlimited)."
             )
         if self.feedback_max_adjustment > self.min_score:
             warns.append(
-                f"FEEDBACK_MAX_ADJUSTMENT ({self.feedback_max_adjustment}) est élevé "
-                f"par rapport à MIN_SCORE ({self.min_score}) : le feedback pourrait "
-                "dominer le scoring factuel."
+                f"FEEDBACK_MAX_ADJUSTMENT ({self.feedback_max_adjustment}) is high "
+                f"relative to MIN_SCORE ({self.min_score}): feedback could dominate "
+                "the factual scoring."
             )
         if self.digest_min_articles > self.daily_quota:
             warns.append(
-                f"DIGEST_MIN_ARTICLES ({self.digest_min_articles}) dépasse "
-                f"DAILY_QUOTA ({self.daily_quota}) : le plafond l'emportera."
+                f"DIGEST_MIN_ARTICLES ({self.digest_min_articles}) exceeds "
+                f"DAILY_QUOTA ({self.daily_quota}): the cap will win."
             )
         if self.urgent_score_threshold <= self.digest_floor_score:
             warns.append(
-                "URGENT_SCORE_THRESHOLD est inférieur ou égal à DIGEST_FLOOR_SCORE : "
-                "presque tout deviendrait urgent, ce qui vide l'alerte de son sens."
+                "URGENT_SCORE_THRESHOLD is at or below DIGEST_FLOOR_SCORE: nearly "
+                "everything would become urgent, defeating the point of the alert."
             )
         return warns
 
 
 def load_feeds(path: Path) -> list[dict]:
     """
-    Charge feeds.yaml.
+    Loads feeds.yaml.
 
         feeds:
           - name: BleepingComputer

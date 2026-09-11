@@ -1,17 +1,17 @@
 """
-Configuration pytest.
+pytest configuration.
 
-Les tests portent sur la logique métier (filtrage, déduplication, sécurité,
-validation) et ne doivent toucher ni le réseau ni Discord. Les modules
-purement réseau sont donc remplacés par des stubs quand ils sont absents,
-ce qui permet à la CI de tourner avec une installation minimale.
+Tests target business logic (filtering, deduplication, security,
+validation) and must touch neither the network nor Discord. Purely
+network-facing modules are stubbed out when absent, so the CI can run
+with a minimal install.
 """
 
 import sys
 import types
 from pathlib import Path
 
-# Le paquet est à la racine du dépôt, pas dans un dossier src/.
+# The package lives at the repo root, not in a src/ folder.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 for name in ("aiohttp", "feedparser"):

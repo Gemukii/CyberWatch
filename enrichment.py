@@ -1,8 +1,8 @@
 """
-Enrichissement par threat intel publique : CISA KEV et EPSS (FIRST.org).
+Enrichment via public threat intel: CISA KEV and EPSS (FIRST.org).
 
-Deux API gratuites sans clé, mises en cache. En cas d'indisponibilité,
-le scoring retombe sur les mots-clés seuls.
+Two free, keyless APIs, cached in memory. If either is unavailable,
+scoring falls back to keywords alone.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ CVE_RE = re.compile(r"\bCVE-(\d{4})-(\d{4,7})\b", re.IGNORECASE)
 
 def extract_cves(*texts: str, limit: int = 12) -> list[str]:
     """
-    Extrait les identifiants CVE valides d'un ou plusieurs textes.
+    Extracts valid CVE identifiers from one or more texts.
 
-    Valide l'année (1999 → année courante + 1) pour écarter les faux positifs
-    du type « CVE-0000-0000 » présents dans les exemples et les templates.
+    Validates the year (1999 -> current year + 1) to filter out false
+    positives like "CVE-0000-0000" found in examples and templates.
     """
     current_year = time.gmtime().tm_year
     found: list[str] = []
@@ -45,11 +45,11 @@ def extract_cves(*texts: str, limit: int = 12) -> list[str]:
 
 
 class Enricher:
-    """Cache mémoire du catalogue KEV + interrogation EPSS à la demande."""
+    """In-memory KEV catalog cache + on-demand EPSS lookup."""
 
     def __init__(self, settings):
         self.s = settings
-        self._kev: set[str] = set()
+        self._kev: dict[str, bool] = {}
         self._kev_fetched_at: float = 0.0
         self._kev_error: str | None = None
 
@@ -64,7 +64,7 @@ class Enricher:
         return (time.time() - self._kev_fetched_at) > ttl
 
     async def refresh_kev(self, session: aiohttp.ClientSession, force: bool = False) -> None:
-        """Recharge le catalogue KEV si le TTL est dépassé."""
+        """Reloads the KEV catalog if the TTL has expired."""
         if not self.s.enable_kev:
             return
         if not force and self._kev and not self.kev_stale:
@@ -73,11 +73,11 @@ class Enricher:
             async with session.get(self.s.kev_url) as resp:
                 if resp.status != 200:
                     raise RuntimeError(f"HTTP {resp.status}")
-                # content_type=None : la CISA sert parfois le JSON en text/plain
+                # content_type=None: CISA sometimes serves the JSON as text/plain.
                 data = await resp.json(content_type=None)
             entries = data.get("vulnerabilities", [])
-            # cveID -> exploitée par des campagnes de rançongiciel. Signal le plus
-        # fort du catalogue.
+            # cveID -> exploited by ransomware campaigns. The catalog's
+            # strongest signal.
             self._kev = {
                 str(item["cveID"]).upper():
                     str(item.get("knownRansomwareCampaignUse", "")).strip().lower() == "known"
@@ -86,20 +86,20 @@ class Enricher:
             }
             self._kev_fetched_at = time.time()
             self._kev_error = None
-            log.info("Catalogue KEV chargé : %d CVE exploitées connues", len(self._kev))
+            log.info("KEV catalog loaded: %d known exploited CVEs", len(self._kev))
         except Exception as exc:
-            # Non bloquant : le bot fonctionne sans, avec un scoring moins fin.
+            # Non-blocking: the bot works without it, with coarser scoring.
             self._kev_error = f"{type(exc).__name__}: {exc}"
-            log.warning("Chargement du catalogue KEV impossible : %s", self._kev_error)
+            log.warning("Could not load KEV catalog: %s", self._kev_error)
 
     def in_kev(self, cves: list[str]) -> list[str]:
-        """Sous-ensemble des CVE présentes au catalogue KEV."""
+        """Subset of CVEs present in the KEV catalog."""
         if not self._kev:
             return []
         return [c for c in cves if c.upper() in self._kev]
 
     def kev_ransomware(self, cves: list[str]) -> bool:
-        """Vrai si l'une des CVE est liée à une campagne de rançongiciel."""
+        """True if any of the CVEs is tied to a ransomware campaign."""
         return any(self._kev.get(c.upper(), False) for c in cves)
 
     # --- EPSS ---
@@ -107,14 +107,14 @@ class Enricher:
         self, session: aiohttp.ClientSession, cves: list[str]
     ) -> dict[str, float]:
         """
-        Récupère les scores EPSS d'un lot de CVE (une seule requête).
+        Fetches EPSS scores for a batch of CVEs (a single request).
 
-        Retourne {CVE: probabilité}. Un échec renvoie un dict vide : l'absence
-        d'EPSS ne doit jamais faire échouer un cycle.
+        Returns {CVE: probability}. A failure returns an empty dict: a
+        missing EPSS score must never fail a cycle.
         """
         if not self.s.enable_epss or not cves:
             return {}
-        # L'API accepte une liste séparée par des virgules ; on borne par prudence.
+        # The API accepts a comma-separated list; capped as a precaution.
         params = {"cve": ",".join(sorted(set(c.upper() for c in cves))[:80])}
         try:
             async with session.get(self.s.epss_url, params=params) as resp:
@@ -122,7 +122,7 @@ class Enricher:
                     raise RuntimeError(f"HTTP {resp.status}")
                 data = await resp.json(content_type=None)
         except Exception as exc:
-            log.debug("EPSS indisponible : %s", exc)
+            log.debug("EPSS unavailable: %s", exc)
             return {}
 
         scores: dict[str, float] = {}
@@ -136,8 +136,8 @@ class Enricher:
     # --- Orchestration ---
     async def enrich(self, articles: list) -> None:
         """
-        Extrait les CVE de chaque article, les croise avec KEV, puis récupère
-        les scores EPSS de l'ensemble du lot en une seule requête.
+        Extracts CVEs from each article, cross-references them with KEV,
+        then fetches EPSS scores for the whole batch in a single request.
         """
         if not articles:
             return
@@ -161,13 +161,13 @@ class Enricher:
 
         kev_hits = sum(1 for a in articles if a.kev_cves)
         if kev_hits:
-            log.info("Enrichissement : %d article(s) portant une CVE du KEV", kev_hits)
+            log.info("Enrichment: %d article(s) carrying a KEV-listed CVE", kev_hits)
 
     def status(self) -> str:
-        """Ligne d'état pour la commande /cyber-status."""
+        """Status line for the /cyber-status command."""
         if not self.s.enable_kev:
-            return "désactivé"
+            return "disabled"
         if self._kev_error and not self._kev:
-            return f"⚠️ erreur ({self._kev_error[:60]})"
+            return f"⚠️ error ({self._kev_error[:60]})"
         age_h = (time.time() - self._kev_fetched_at) / 3600
-        return f"{len(self._kev)} CVE · maj il y a {age_h:.0f} h"
+        return f"{len(self._kev)} CVEs · updated {age_h:.0f}h ago"

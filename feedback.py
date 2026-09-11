@@ -1,8 +1,8 @@
 """
-Apprentissage des poids de scoring depuis les réactions 👍/👎.
+Learning scoring weights from 👍/👎 reactions.
 
-Les votes vivent dans Discord, donc les poids sont recalculés depuis
-l'historique plutôt que stockés. Garde-fous et calcul : docs/ARCHITECTURE.md §4.
+Votes live in Discord, so weights are recomputed from history rather than
+stored. Guardrails and math: docs/ARCHITECTURE.md §4.
 """
 
 from __future__ import annotations
@@ -16,27 +16,26 @@ from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
-# Réactions reconnues comme un vote. Toute autre réaction est ignorée,
-# ce qui laisse 🔖, 👀 ou autres libres pour un usage personnel.
+# Reactions recognized as a vote. Any other reaction is ignored
 UPVOTE = "👍"
 DOWNVOTE = "👎"
 
-# Marqueur inscrit dans le pied de l'embed. Format : "sig:nom1,nom2,nom3"
+# Marker written into the embed footer. Format: "sig:name1,name2,name3"
 SIGNAL_PREFIX = "sig:"
 SIGNAL_RE = re.compile(r"sig:([a-z0-9\-,]+)", re.IGNORECASE)
 
-# Ces signaux décrivent des faits, pas des goûts : ils ne s'apprennent pas.
+# These signals describe facts, not taste: they're never learned from.
 FACTUAL_SIGNALS = frozenset({"kev", "epss", "cve", "cvss"})
 
 
 def encode_signals(signals: list[str]) -> str:
-    """Sérialise les signaux pour le pied d'embed."""
-    apprenables = [s for s in signals if s not in FACTUAL_SIGNALS]
-    return SIGNAL_PREFIX + ",".join(apprenables[:8]) if apprenables else ""
+    """Serializes signals into the embed footer."""
+    learnable = [s for s in signals if s not in FACTUAL_SIGNALS]
+    return SIGNAL_PREFIX + ",".join(learnable[:8]) if learnable else ""
 
 
 def decode_signals(footer_text: str) -> list[str]:
-    """Relit les signaux depuis le pied d'un embed déjà publié."""
+    """Reads signals back from an already-published embed's footer."""
     match = SIGNAL_RE.search(footer_text or "")
     if not match:
         return []
@@ -45,7 +44,7 @@ def decode_signals(footer_text: str) -> list[str]:
 
 @dataclass
 class Tally:
-    """Compteur de votes pour un signal ou une source."""
+    """Vote counter for a signal or a source."""
     up: int = 0
     down: int = 0
 
@@ -55,16 +54,16 @@ class Tally:
 
     @property
     def ratio(self) -> float:
-        """Entre -1 (rejet unanime) et +1 (adhésion unanime)."""
+        """Between -1 (unanimous rejection) and +1 (unanimous approval)."""
         return (self.up - self.down) / self.total if self.total else 0.0
 
 
 @dataclass
 class LearnedWeights:
     """
-    Ajustements appris, prêts à être appliqués au scoring.
+    Learned adjustments, ready to be applied to scoring.
 
-    Instancié par `collect_feedback()`, puis passé à `filters.score_article()`.
+    Built by `collect_feedback()`, then passed to `filters.score_article()`.
     """
     signals: dict[str, Tally] = field(default_factory=dict)
     sources: dict[str, Tally] = field(default_factory=dict)
@@ -76,30 +75,30 @@ class LearnedWeights:
 
     def _delta(self, tally: Tally) -> int:
         """
-        Convertit un compteur en ajustement de score.
+        Converts a vote count into a score adjustment.
 
-        La confiance croît avec le nombre de votes : 3 votes unanimes pèsent
-        moins que 20. Le facteur n/(n+3) évite qu'un petit échantillon ne
-        produise l'ajustement maximal.
+        Confidence grows with the number of votes: 3 unanimous votes carry
+        less weight than 20. The n/(n+3) factor keeps a small sample from
+        producing the maximum adjustment.
         """
         if tally.total < self.min_votes:
             return 0
-        confiance = tally.total / (tally.total + 3)
-        return round(self.max_adjustment * tally.ratio * confiance)
+        confidence = tally.total / (tally.total + 3)
+        return round(self.max_adjustment * tally.ratio * confidence)
 
     def adjustment(self, signals: list[str], source: str = "") -> tuple[int, str]:
         """
-        Ajustement total pour un article, avec son explication lisible.
+        Total adjustment for an article, with a human-readable explanation.
 
-        Retourne (delta, explication). L'explication alimente `/cyber-queue`
-        et les logs : une boucle de feedback opaque est impossible à déboguer.
+        Returns (delta, explanation). The explanation feeds `/cyber-queue`
+        and the logs: an opaque feedback loop is impossible to debug.
         """
         details: list[str] = []
         total = 0
 
         for name in signals:
             if name in FACTUAL_SIGNALS:
-                continue  # garde-fou n°1
+                continue  # guardrail #1
             tally = self.signals.get(name)
             if not tally:
                 continue
@@ -116,14 +115,14 @@ class LearnedWeights:
                     total += delta
                     details.append(f"{source} {delta:+d}")
 
-        # Garde-fou n°3 : bornage global, pour qu'un cumul de petits
-        # ajustements ne finisse pas par dominer le score factuel.
-        borne = self.max_adjustment * 2
-        total = max(-borne, min(borne, total))
+        # Guardrail #3: global cap, so a pile-up of small adjustments never
+        # ends up dominating the factual score.
+        cap = self.max_adjustment * 2
+        total = max(-cap, min(cap, total))
         return total, ", ".join(details[:4]) if details else "—"
 
     def top_signals(self, count: int = 8) -> list[tuple[str, Tally, int]]:
-        """Signaux les plus influents, pour la commande de transparence."""
+        """Most influential signals, for the transparency command."""
         rows = [
             (name, tally, self._delta(tally))
             for name, tally in self.signals.items()
@@ -143,14 +142,14 @@ class LearnedWeights:
 
     @property
     def is_active(self) -> bool:
-        """Vrai dès qu'au moins un ajustement non nul s'applique."""
+        """True as soon as at least one non-zero adjustment applies."""
         return any(self._delta(t) for t in self.signals.values()) or any(
             self._delta(t) for t in self.sources.values()
         )
 
 
 def _source_from_author(author_name: str) -> str:
-    """L'auteur de l'embed vaut « Source · Titre d'origine »."""
+    """The embed's author field holds "Source · Original title"."""
     return (author_name or "").split("·")[0].strip()
 
 
@@ -162,10 +161,10 @@ async def collect_feedback(
     message_limit: int = 500,
 ) -> LearnedWeights:
     """
-    Relit l'historique du salon et agrège les réactions en poids appris.
+    Re-reads the channel's history and aggregates reactions into learned weights.
 
-    Ne lève jamais : un feedback indisponible doit dégrader le classement,
-    pas interrompre la veille.
+    Never raises: unavailable feedback should degrade the ranking, not
+    interrupt the watch.
     """
     weights = LearnedWeights(min_votes=min_votes, max_adjustment=max_adjustment)
     signals: dict[str, Tally] = defaultdict(Tally)
@@ -178,46 +177,46 @@ async def collect_feedback(
                 continue
             for embed in message.embeds:
                 if not embed.url:
-                    continue  # en-tête de digest, statut… : pas un article
+                    continue  # digest header, status message...: not an article
 
                 footer = embed.footer.text if embed.footer else ""
-                noms = decode_signals(footer)
+                names = decode_signals(footer)
                 source = _source_from_author(embed.author.name if embed.author else "")
-                if not noms and not source:
+                if not names and not source:
                     continue
 
                 up = down = 0
                 for reaction in message.reactions:
                     emoji = str(reaction.emoji)
-                    # On retire le vote du bot lui-même, qui pré-pose les
-                    # réactions pour rendre le vote accessible en un clic.
-                    compte = max(0, reaction.count - (1 if reaction.me else 0))
+                    # Subtract the bot's own reaction: it pre-posts both
+                    # emojis so voting is a single tap.
+                    count = max(0, reaction.count - (1 if reaction.me else 0))
                     if emoji == UPVOTE:
-                        up += compte
+                        up += count
                     elif emoji == DOWNVOTE:
-                        down += compte
+                        down += count
 
                 if not (up or down):
                     continue
 
                 weights.votes_seen += up + down
                 weights.articles_voted += 1
-                for nom in noms:
-                    signals[nom].up += up
-                    signals[nom].down += down
+                for name in names:
+                    signals[name].up += up
+                    signals[name].down += down
                 if source:
                     sources[source].up += up
                     sources[source].down += down
 
     except Exception as exc:
-        log.warning("Collecte du feedback impossible (%s) — scoring non ajusté", exc)
+        log.warning("Could not collect feedback (%s) — scoring left unadjusted", exc)
         return weights
 
     weights.signals = dict(signals)
     weights.sources = dict(sources)
     if weights.articles_voted:
         log.info(
-            "Feedback : %d vote(s) sur %d article(s), %d signal(aux) ajusté(s)",
+            "Feedback: %d vote(s) across %d article(s), %d signal(s) adjusted",
             weights.votes_seen,
             weights.articles_voted,
             sum(1 for t in weights.signals.values() if weights._delta(t)),

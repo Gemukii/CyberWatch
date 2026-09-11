@@ -1,8 +1,8 @@
 """
-Collecte : lecture des flux RSS/Atom et extraction du corps des articles.
+Collection: reading RSS/Atom feeds and extracting article bodies.
 
-feedparser est synchrone (exécuté en thread), le téléchargement des pages
-est asynchrone via aiohttp.
+feedparser is synchronous (run in a thread), page downloads are async
+via aiohttp.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from bs4 import BeautifulSoup
 
 log = logging.getLogger(__name__)
 
-# trafilatura est optionnel : le bot fonctionne sans, en mode dégradé.
+# trafilatura is optional: the bot works without it, in degraded mode.
 try:
     import trafilatura
 
@@ -31,35 +31,35 @@ except ImportError:  # pragma: no cover
 
 @dataclass
 class Article:
-    """Un article candidat, enrichi au fil du pipeline."""
+    """A candidate article, enriched as it moves through the pipeline."""
 
     title: str
     url: str
     source: str
     source_weight: int = 0
-    summary: str = ""            # description fournie par le flux RSS
-    published_ts: float = 0.0    # epoch UTC
-    fulltext: str = ""           # corps de l'article, si récupéré
+    summary: str = ""            # description provided by the RSS feed
+    published_ts: float = 0.0    # UTC epoch
+    fulltext: str = ""           # article body, if fetched
 
-    # Enrichissement (voir enrichment.py)
+    # Enrichment (see enrichment.py)
     cves: list[str] = field(default_factory=list)
-    kev_cves: list[str] = field(default_factory=list)   # présentes au catalogue CISA KEV
-    kev_ransomware: bool = False                        # liée à une campagne de rançongiciel
-    epss_max: float | None = None                       # probabilité d'exploitation 0-1
+    kev_cves: list[str] = field(default_factory=list)   # present in the CISA KEV catalog
+    kev_ransomware: bool = False                        # tied to a ransomware campaign
+    epss_max: float | None = None                       # 0-1 exploitation probability
 
-    # Filtrage (voir filters.py)
+    # Filtering (see filters.py)
     score: int = 0
     reasons: list[str] = field(default_factory=list)
 
     @property
     def content(self) -> str:
-        """Le meilleur texte disponible pour l'analyse et le résumé."""
+        """Best available text for analysis and summarization."""
         return self.fulltext or self.summary
 
 
 @dataclass
 class FeedResult:
-    """Résultat de la lecture d'un flux, pour le suivi de santé."""
+    """Result of reading a feed, for health tracking."""
 
     name: str
     articles: list[Article] = field(default_factory=list)
@@ -67,7 +67,7 @@ class FeedResult:
 
 
 def _strip_html(raw: str) -> str:
-    """Transforme un fragment HTML en texte brut lisible."""
+    """Turns an HTML fragment into readable plain text."""
     if not raw:
         return ""
     text = BeautifulSoup(raw, "html.parser").get_text(" ", strip=True)
@@ -75,26 +75,26 @@ def _strip_html(raw: str) -> str:
 
 
 def _entry_timestamp(entry) -> float:
-    """Date de publication de l'entrée en epoch UTC. 0 si introuvable."""
+    """Publication date of the entry, as a UTC epoch. 0 if not found."""
     for key in ("published_parsed", "updated_parsed", "created_parsed"):
         parsed = entry.get(key)
         if parsed:
             try:
-                return float(timegm(parsed))  # les *_parsed sont en UTC
+                return float(timegm(parsed))  # the *_parsed fields are UTC
             except (TypeError, ValueError):
                 continue
     return 0.0
 
 
 def _parse_feed(url: str, name: str, weight: int) -> FeedResult:
-    """Parse un flux (appelé dans un thread : feedparser est bloquant)."""
+    """Parses a feed (run in a thread: feedparser is blocking)."""
     try:
         parsed = feedparser.parse(url)
     except Exception as exc:
         return FeedResult(name=name, error=f"{type(exc).__name__}: {exc}")
 
     if parsed.bozo and not parsed.entries:
-        return FeedResult(name=name, error=str(parsed.get("bozo_exception", "flux illisible")))
+        return FeedResult(name=name, error=str(parsed.get("bozo_exception", "unreadable feed")))
 
     articles = []
     for entry in parsed.entries:
@@ -122,10 +122,10 @@ async def fetch_all_feeds(
     feeds: list[dict], max_age_hours: int
 ) -> tuple[list[Article], list[FeedResult]]:
     """
-    Récupère tous les flux en parallèle et ne garde que les articles récents.
+    Fetches all feeds in parallel and keeps only recent articles.
 
-    Retourne (articles, résultats par flux). Le second élément alimente le
-    suivi de santé : un flux mort doit être visible, pas silencieux.
+    Returns (articles, per-feed results). The second element feeds health
+    tracking: a dead feed needs to be visible, not silent.
     """
     tasks = [
         asyncio.to_thread(_parse_feed, feed["url"], feed["name"], feed["weight"])
@@ -143,20 +143,20 @@ async def fetch_all_feeds(
         results.append(result)
 
         if result.error:
-            log.warning("Flux %s en erreur : %s", result.name, result.error)
+            log.warning("Feed %s errored: %s", result.name, result.error)
             continue
 
         fresh = [a for a in result.articles if not a.published_ts or a.published_ts >= cutoff]
         articles.extend(fresh)
-        log.info("%-22s → %d entrées (%d récentes)", result.name, len(result.articles), len(fresh))
+        log.info("%-22s -> %d entries (%d recent)", result.name, len(result.articles), len(fresh))
 
-    # Plus récent d'abord (les articles sans date passent en dernier).
+    # Most recent first (articles with no date sort last).
     articles.sort(key=lambda a: a.published_ts, reverse=True)
     return articles, results
 
 
 def _extract_with_soup(raw_html: str) -> str:
-    """Repli maison : les paragraphes du conteneur d'article le plus probable."""
+    """Home-grown fallback: paragraphs from the most likely article container."""
     soup = BeautifulSoup(raw_html, "html.parser")
     for tag in soup(["script", "style", "nav", "header", "footer", "aside", "form", "iframe"]):
         tag.decompose()
@@ -169,11 +169,11 @@ def _extract_with_soup(raw_html: str) -> str:
 
 def extract_text(raw_html: str) -> str:
     """
-    Extrait le texte principal d'une page.
+    Extracts the main text of a page.
 
-    trafilatura sait écarter menus, encarts et blocs de recommandation bien
-    mieux qu'une heuristique sur les balises <p>. On l'utilise s'il est
-    installé, sinon on retombe sur BeautifulSoup.
+    trafilatura filters out menus, sidebars and recommendation blocks far
+    better than a heuristic on <p> tags. Used if installed, otherwise
+    falls back to BeautifulSoup.
     """
     if HAS_TRAFILATURA:
         try:
@@ -186,27 +186,27 @@ def extract_text(raw_html: str) -> str:
             if extracted and len(extracted) > 200:
                 return " ".join(extracted.split())
         except Exception as exc:  # pragma: no cover
-            log.debug("trafilatura a échoué, repli sur BeautifulSoup : %s", exc)
+            log.debug("trafilatura failed, falling back to BeautifulSoup: %s", exc)
     return " ".join(_extract_with_soup(raw_html).split())
 
 
 async def _fetch_one(session: aiohttp.ClientSession, article: Article, max_chars: int) -> None:
-    """Télécharge la page et en extrait le texte principal (best effort)."""
+    """Downloads the page and extracts its main text (best effort)."""
     try:
         async with session.get(article.url, allow_redirects=True) as resp:
             if resp.status != 200:
-                log.debug("HTTP %s sur %s", resp.status, article.url)
+                log.debug("HTTP %s on %s", resp.status, article.url)
                 return
             ctype = resp.headers.get("Content-Type", "")
             if "html" not in ctype and "xml" not in ctype:
                 return
             raw = await resp.text(errors="ignore")
-    except Exception as exc:  # réseau, timeout, SSL...
-        log.debug("Impossible de récupérer %s : %s", article.url, exc)
+    except Exception as exc:  # network, timeout, SSL...
+        log.debug("Could not fetch %s: %s", article.url, exc)
         return
 
     text = extract_text(raw)
-    if len(text) < 200:  # extraction ratée : on garde le résumé RSS
+    if len(text) < 200:  # extraction failed: keep the RSS summary
         return
     article.fulltext = html.unescape(text)[:max_chars]
 
@@ -214,7 +214,7 @@ async def _fetch_one(session: aiohttp.ClientSession, article: Article, max_chars
 async def enrich_with_fulltext(
     articles: list[Article], user_agent: str, timeout: int, max_chars: int
 ) -> None:
-    """Récupère le corps de plusieurs articles en parallèle (5 max à la fois)."""
+    """Fetches the body of several articles in parallel (5 at a time max)."""
     if not articles:
         return
     connector = aiohttp.TCPConnector(limit=5)

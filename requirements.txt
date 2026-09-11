@@ -1,18 +1,8 @@
-# --- Bot Discord ---
 discord.py>=2.4,<3.0
-
-# --- Collecte RSS et extraction de contenu ---
 feedparser>=6.0.11
 aiohttp>=3.9
 beautifulsoup4>=4.12
-lxml>=5.0              # parser rapide utilisé par feedparser et bs4
-
-# --- Extraction du texte principal (optionnel mais recommandé) ---
-# Nettement meilleur que l'heuristique de repli sur les sites d'actualité.
-# Retirable si l'espace disque est critique : le bot bascule automatiquement
-# sur BeautifulSoup, avec des résumés un peu moins propres.
+lxml>=5.0             
 trafilatura>=1.8
-
-# --- Configuration ---
 python-dotenv>=1.0
 PyYAML>=6.0

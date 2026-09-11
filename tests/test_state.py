@@ -1,10 +1,10 @@
 """
-Tests de l'état sans base de données et de la robustesse du cycle.
+Tests for state without a database, and cycle robustness.
 
-Vérifient notamment les trois bugs corrigés en v2 :
-  - marquage limité aux articles réellement publiés
-  - amorçage borné par la date, pas par un nombre fixe de messages
-  - idempotence de l'amorçage sur reconnexion Discord
+Notably covers three bugs fixed in v2:
+  - marking limited to articles actually published
+  - priming bounded by date, not a fixed message count
+  - priming idempotence across Discord reconnects
 """
 
 import asyncio
@@ -20,16 +20,16 @@ from state import State
 
 
 def article(**kwargs) -> Article:
-    base = {"title": "Titre", "url": "https://example.test/a", "source": "Test"}
+    base = {"title": "Title", "url": "https://example.test/a", "source": "Test"}
     base.update(kwargs)
     return Article(**base)
 
 
 # --------------------------------------------------------------------------- #
-# Faux objets Discord
+# Fake Discord objects
 # --------------------------------------------------------------------------- #
 class FakeEmbed:
-    def __init__(self, url, author_name=None, title="🔴 Titre reformulé"):
+    def __init__(self, url, author_name=None, title="🔴 Reworded title"):
         self.url = url
         self.title = title
         self.author = types.SimpleNamespace(name=author_name) if author_name else None
@@ -42,11 +42,11 @@ class FakeMessage:
 
 
 class FakeChannel:
-    """Salon Discord minimal : historique en lecture, envois comptabilisés."""
+    """Minimal Discord channel: readable history, sends are counted."""
 
     def __init__(self, messages=None, fail_on=()):
         self.messages = messages or []
-        self.fail_on = fail_on          # indices d'envois qui doivent échouer
+        self.fail_on = fail_on          # indices of sends that must fail
         self.sent = 0
 
     def history(self, limit=None, after=None, oldest_first=None):
@@ -59,58 +59,59 @@ class FakeChannel:
         index = self.sent
         self.sent += 1
         if index in self.fail_on:
-            raise RuntimeError("échec simulé d'envoi")
+            raise RuntimeError("simulated send failure")
         return object()
 
 
 # --------------------------------------------------------------------------- #
-# Amorçage depuis l'historique Discord
+# Priming from Discord history
 # --------------------------------------------------------------------------- #
-def test_index_reconstruit_apres_redemarrage():
-    """Un bot qui redémarre ne doit pas republier ce qui est déjà dans le salon."""
-    titre_origine = "Critical Fortinet zero-day actively exploited"
+def test_index_rebuilt_after_restart():
+    """A restarting bot must not republish what's already in the channel."""
+    original_title = "Critical Fortinet zero-day actively exploited"
     channel = FakeChannel([
-        FakeMessage([FakeEmbed("https://cert.test/1", f"CERT-FR · {titre_origine}")]),
-        FakeMessage([FakeEmbed(None, title="🛡️ Veille cyber")]),  # en-tête, ignoré
+        FakeMessage([FakeEmbed("https://cert.test/1", f"CERT-FR · {original_title}")]),
+        FakeMessage([FakeEmbed(None, title="🛡️ Cyber watch")]),  # header, ignored
     ])
     state = State(retention_days=7)
     assert asyncio.run(state.prime_from_channel(channel)) == 1
     assert state.is_known("https://cert.test/1?utm_source=twitter")
 
 
-def test_dedup_par_titre_preservee_apres_redemarrage():
+def test_title_dedup_preserved_after_restart():
     """
-    Le titre publié est reformulé en français ; c'est author.name qui porte
-    le titre d'origine et permet de reconnaître la même news ailleurs.
+    The published title is reworded by the LLM; author.name carries the
+    original title and is what lets the bot recognize the same story
+    elsewhere.
     """
-    titre_origine = "Critical Fortinet zero-day actively exploited"
+    original_title = "Critical Fortinet zero-day actively exploited"
     channel = FakeChannel([
-        FakeMessage([FakeEmbed("https://cert.test/1", f"CERT-FR · {titre_origine}")])
+        FakeMessage([FakeEmbed("https://cert.test/1", f"CERT-FR · {original_title}")])
     ])
     state = State(retention_days=7)
     asyncio.run(state.prime_from_channel(channel))
 
-    reprise = article(
-        title=titre_origine + "!", url="https://autre.test/9",
+    reprint = article(
+        title=original_title + "!", url="https://other.test/9",
         summary="CVE-2026-1234 RCE. CVSS: 9.8.", cves=["CVE-2026-1234"],
     )
-    assert filters.select_articles([reprise], state, 5, 0.72, 10) == []
+    assert filters.select_articles([reprint], state, 5, 0.72, 10) == []
 
 
-def test_amorcage_idempotent_sur_reconnexion():
+def test_priming_idempotent_on_reconnect():
     """
-    on_ready se redéclenche à chaque reconnexion Discord. Relire tout
-    l'historique à chaque fois serait inutile et coûteux.
+    on_ready fires again on every Discord reconnect. Re-reading the whole
+    history each time would be wasteful and costly.
     """
     channel = FakeChannel([FakeMessage([FakeEmbed("https://cert.test/1", "S · T")])])
     state = State(retention_days=7)
     assert asyncio.run(state.prime_from_channel(channel)) == 1
-    assert asyncio.run(state.prime_from_channel(channel)) == 0   # déjà amorcé
+    assert asyncio.run(state.prime_from_channel(channel)) == 0   # already primed
     assert state.primed
 
 
-def test_amorcage_echoue_sans_bloquer():
-    """Sans permission de lecture d'historique, le bot démarre quand même."""
+def test_priming_failure_does_not_block_startup():
+    """Without history-read permission, the bot still starts up."""
     class BrokenChannel:
         def history(self, **kwargs):
             async def generator():
@@ -120,29 +121,29 @@ def test_amorcage_echoue_sans_bloquer():
 
     state = State(retention_days=7)
     assert asyncio.run(state.prime_from_channel(BrokenChannel())) == 0
-    assert not state.primed          # signalé comme non amorcé dans /cyber-status
+    assert not state.primed          # reported as not primed in /cyber-status
 
 
 # --------------------------------------------------------------------------- #
-# Publication partielle
+# Partial publication
 # --------------------------------------------------------------------------- #
-def test_seuls_les_articles_publies_sont_memorises():
+def test_only_published_articles_are_recorded():
     """
-    Bug corrigé en v2 : un embed dont l'envoi échoue ne doit PAS être marqué
-    comme vu, sinon il est perdu définitivement.
+    Bug fixed in v2: an embed whose send fails must NOT be marked as seen,
+    or it's lost for good.
     """
     pytest.importorskip("discord")
     import publisher
     from summarizer import Summary
 
-    # envoi 0 = en-tête, 1 = premier article (échoue), 2 = second article
+    # send 0 = header, 1 = first article (fails), 2 = second article
     channel = FakeChannel(fail_on=(1,))
     items = [
-        (article(url="https://a.test/1"), Summary(title="A", bullets=["x"], severity="Moyen")),
-        (article(url="https://a.test/2"), Summary(title="B", bullets=["y"], severity="Moyen")),
+        (article(url="https://a.test/1"), Summary(title="A", bullets=["x"], severity="Medium")),
+        (article(url="https://a.test/2"), Summary(title="B", bullets=["y"], severity="Medium")),
     ]
 
-    # publisher attend discord.HTTPException ; on élargit le filet pour le test
+    # publisher expects discord.HTTPException; widen the net for the test
     original = publisher.discord.HTTPException
     publisher.discord.HTTPException = RuntimeError
     try:
@@ -155,20 +156,20 @@ def test_seuls_les_articles_publies_sont_memorises():
 
 
 # --------------------------------------------------------------------------- #
-# Santé des flux
+# Feed health
 # --------------------------------------------------------------------------- #
-def test_flux_mort_signale_apres_n_cycles():
+def test_dead_feed_flagged_after_n_cycles():
     state = State(retention_days=7)
     for _ in range(3):
         state.record_feed_results([
-            FeedResult(name="MortRSS", articles=[], error="HTTP 404"),
-            FeedResult(name="VivantRSS", articles=[article()]),
+            FeedResult(name="DeadRSS", articles=[], error="HTTP 404"),
+            FeedResult(name="AliveRSS", articles=[article()]),
         ])
-    morts = [f.name for f in state.unhealthy_feeds(threshold=3)]
-    assert morts == ["MortRSS"]
+    dead = [f.name for f in state.unhealthy_feeds(threshold=3)]
+    assert dead == ["DeadRSS"]
 
 
-def test_flux_retabli_remet_le_compteur_a_zero():
+def test_recovered_feed_resets_the_counter():
     state = State(retention_days=7)
     state.record_feed_results([FeedResult(name="F", articles=[], error="HTTP 500")])
     state.record_feed_results([FeedResult(name="F", articles=[article()])])
@@ -176,17 +177,17 @@ def test_flux_retabli_remet_le_compteur_a_zero():
 
 
 # --------------------------------------------------------------------------- #
-# Extraction de CVE
+# CVE extraction
 # --------------------------------------------------------------------------- #
-def test_extraction_cve_valides():
-    cves = extract_cves("Voir CVE-2026-1234 et cve-2025-99999, corrigées.")
+def test_valid_cve_extraction():
+    cves = extract_cves("See CVE-2026-1234 and cve-2025-99999, both patched.")
     assert cves == ["CVE-2026-1234", "CVE-2025-99999"]
 
 
-@pytest.mark.parametrize("faux", ["CVE-0000-0000", "CVE-1990-1234", "CVE-2099-1234"])
-def test_annee_aberrante_rejetee(faux):
-    assert extract_cves(faux) == []
+@pytest.mark.parametrize("bogus", ["CVE-0000-0000", "CVE-1990-1234", "CVE-2099-1234"])
+def test_bogus_year_rejected(bogus):
+    assert extract_cves(bogus) == []
 
 
-def test_doublons_cve_supprimes():
-    assert extract_cves("CVE-2026-1234 puis encore CVE-2026-1234") == ["CVE-2026-1234"]
+def test_duplicate_cves_removed():
+    assert extract_cves("CVE-2026-1234 then again CVE-2026-1234") == ["CVE-2026-1234"]

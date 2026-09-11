@@ -1,13 +1,10 @@
-# syntax=docker/dockerfile:1
-
 # ---------------------------------------------------------------------------
-# Étage 1 — build
-# Les dépendances sont compilées ici (lxml et trafilatura ont des extensions C)
-# puis seul le résultat est copié dans l'image finale.
+# Stage 1 — build
+# Dependencies are compiled here (lxml and trafilatura have C extensions),
+# and only the result is copied into the final image.
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS builder
 
-# Outils de compilation nécessaires à lxml, absents de l'image slim.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libxml2-dev \
@@ -17,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY requirements.txt .
 
-# Environnement virtuel autonome, copié tel quel à l'étage suivant.
+# Self-contained virtual environment, copied as-is into the next stage.
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip \
@@ -25,13 +22,11 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 
 # ---------------------------------------------------------------------------
-# Étage 2 — runtime
-# Ni compilateur ni en-têtes de dev : surface d'attaque réduite, image plus
-# légère.
+# Stage 2 — runtime
+# No compiler, no dev headers: smaller attack surface, lighter image.
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim
 
-# Bibliothèques partagées requises à l'exécution par lxml.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libxml2 \
         libxslt1.1 \
@@ -39,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# Utilisateur non privilégié : le bot n'a aucune raison de tourner en root.
+# Unprivileged user: the bot has no reason to run as root.
 RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 cyberwatch
 
 COPY --from=builder /opt/venv /opt/venv
@@ -52,8 +47,7 @@ COPY --chown=cyberwatch:cyberwatch *.py feeds.yaml ./
 
 USER cyberwatch
 
-# Vérifie que le processus est vivant et que la config se charge.
-# Le bot ne sert aucun port, donc pas de sonde HTTP possible.
+# Checks that the process is alive and the config loads.
 HEALTHCHECK --interval=5m --timeout=15s --start-period=45s --retries=3 \
     CMD python -c "import config; import sys; sys.exit(0 if config.settings.feeds else 1)"
 

@@ -1,17 +1,17 @@
-# Sources de veille cyber.
+# Cybersecurity watch sources.
 #
-# Le contenu de ces flux appartient à leurs éditeurs. Le bot ne republie rien :
-# il résume et renvoie vers l'original. Avant d'ajouter une source, vérifier
-# que son flux RSS est public et destiné à la syndication.
-# weight : bonus de score appliqué aux articles de cette source (0 = neutre).
-#          Utile pour privilégier les sources officielles (CERT-FR, CISA).
-# enabled : passe à false pour désactiver sans supprimer.
+# The content of these feeds belongs to their publishers. The bot never
+# republishes it: it summarizes and links back to the original. Before
+# adding a source, check that its RSS feed is public and meant for syndication.
+# weight: score bonus applied to articles from this source (0 = neutral).
+#         Useful to favor official sources (CERT-FR, CISA).
+# enabled: set to false to disable without deleting.
 #
-# NB : les URL de flux changent parfois. Si une source remonte 0 article
-#      pendant plusieurs jours, vérifie son URL dans un navigateur.
+# Note: feed URLs sometimes change. If a source returns 0 articles for
+#       several days, check its URL in a browser.
 
 feeds:
-  # --- Sources francophones / officielles ---
+  # --- French-language / official sources ---
   - name: CERT-FR (ANSSI)
     url: https://www.cert.ssi.gouv.fr/feed/
     enabled: true
@@ -22,7 +22,7 @@ feeds:
     enabled: true
     weight: 3
 
-  # --- Presse spécialisée ---
+  # --- Trade press ---
   - name: BleepingComputer
     url: https://www.bleepingcomputer.com/feed/
     enabled: true
@@ -53,7 +53,7 @@ feeds:
     enabled: false
     weight: 0
 
-  # --- Recherche / threat intel ---
+  # --- Research / threat intel ---
   - name: Google Project Zero
     url: https://googleprojectzero.blogspot.com/feeds/posts/default
     enabled: false
