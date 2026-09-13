@@ -30,6 +30,7 @@ SEVERITY_STYLE = {
 # Discord alone, what's already been published today.
 DIGEST_MARKER = "#digest"
 URGENT_MARKER = "#urgent"
+KEV_ESCALATION_MARKER = "#kev-escalation"
 
 TITLE_LIMIT = 256
 AUTHOR_LIMIT = 256
@@ -166,6 +167,76 @@ def build_header_embed(
         color=0x5865F2,
         timestamp=datetime.now(tz=timezone.utc),
     ).set_footer(text=f"Summaries: {provider} · {DIGEST_MARKER}")
+
+
+def build_kev_escalation_embed(escalation: dict, ransomware: bool = False) -> discord.Embed:
+    """
+    A previously published article whose CVE has since entered the CISA
+    KEV catalog: confirmed exploitation discovered after the fact.
+
+    Links back to the original article rather than re-summarizing it — the
+    escalation is the news here, not the vulnerability itself again.
+    """
+    cve = escalation["cve"]
+    description = (
+        f"**{cve}**, covered in an earlier watch entry, has since been "
+        "added to the CISA KEV catalog: exploitation is now confirmed."
+    )
+    if ransomware:
+        description += " It is tied to a known ransomware campaign."
+    description += f"\n\n[Original article]({escalation['url']})"
+
+    embed = discord.Embed(
+        title=f"🚨 Escalation: {cve} now confirmed exploited",
+        description=description,
+        color=SEVERITY_STYLE["Critical"][0],
+        timestamp=datetime.now(tz=timezone.utc),
+    )
+    if escalation.get("title"):
+        embed.set_author(name=_truncate(escalation["title"], AUTHOR_LIMIT))
+    # The CVE is embedded in the footer text itself so state.py can parse
+    # it back out on priming, without needing a dedicated field.
+    embed.set_footer(text=f"{cve} · {KEV_ESCALATION_MARKER}")
+    return embed
+
+
+async def publish_kev_escalations(
+    channel: discord.abc.Messageable,
+    escalations: list[dict],
+    ransomware_cves: set[str] | None = None,
+    mention: str = "none",
+) -> list[str]:
+    """
+    Publishes one embed per newly-escalated CVE. Returns the CVEs actually
+    sent — same principle as `publish()`: a failed send must not be marked
+    as escalated, or the catalog entry is silently missed forever.
+    """
+    if not escalations:
+        return []
+    ransomware_cves = ransomware_cves or set()
+
+    content, allowed = None, NO_MENTIONS
+    if mention and mention.lower() != "none":
+        if mention.lower() == "here":
+            content, allowed = "@here", discord.AllowedMentions(everyone=True)
+        elif mention.isdigit():
+            content = f"<@&{mention}>"
+            allowed = discord.AllowedMentions(roles=True)
+
+    sent: list[str] = []
+    for escalation in escalations:
+        try:
+            await channel.send(
+                content=content,
+                embed=build_kev_escalation_embed(
+                    escalation, ransomware=escalation["cve"] in ransomware_cves
+                ),
+                allowed_mentions=allowed,
+            )
+            sent.append(escalation["cve"])
+        except discord.HTTPException as exc:
+            log.error("Failed to publish KEV escalation for %s: %s", escalation["cve"], exc)
+    return sent
 
 
 async def publish(

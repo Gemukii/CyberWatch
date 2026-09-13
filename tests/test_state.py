@@ -16,7 +16,7 @@ import pytest
 import filters
 from enrichment import extract_cves
 from sources import Article, FeedResult
-from state import State
+from state import State, url_hash
 
 
 def article(**kwargs) -> Article:
@@ -29,10 +29,15 @@ def article(**kwargs) -> Article:
 # Fake Discord objects
 # --------------------------------------------------------------------------- #
 class FakeEmbed:
-    def __init__(self, url, author_name=None, title="🔴 Reworded title"):
+    def __init__(self, url, author_name=None, title="🔴 Reworded title", footer=None, cves=None):
         self.url = url
         self.title = title
         self.author = types.SimpleNamespace(name=author_name) if author_name else None
+        self.footer = types.SimpleNamespace(text=footer) if footer else None
+        self.fields = (
+            [types.SimpleNamespace(name="CVE", value=" · ".join(f"`{c}`" for c in cves))]
+            if cves else []
+        )
 
 
 class FakeMessage:
@@ -191,3 +196,117 @@ def test_bogus_year_rejected(bogus):
 
 def test_duplicate_cves_removed():
     assert extract_cves("CVE-2026-1234 then again CVE-2026-1234") == ["CVE-2026-1234"]
+
+
+# --------------------------------------------------------------------------- #
+# KEV retrospective escalation
+# --------------------------------------------------------------------------- #
+def test_published_cve_tracked():
+    state = State(retention_days=7, kev_retro_days=14)
+    state.mark_published("https://a.test/1", "Title", cves=["CVE-2026-1234"])
+    assert "CVE-2026-1234" in state.tracked_cves()
+
+
+def test_pending_escalation_detected_once_cve_enters_kev():
+    """
+    Core scenario: an article published as routine severity days ago has
+    its CVE added to KEV later. The next cycle must catch it.
+    """
+    state = State(retention_days=7, kev_retro_days=14)
+    state.mark_published("https://a.test/1", "Flaw in Acme Router", cves=["CVE-2026-1234"])
+
+    # Simulate Enricher.in_kev() confirming the CVE is now listed.
+    pending = state.pending_kev_escalations(["CVE-2026-1234"])
+    assert len(pending) == 1
+    assert pending[0]["cve"] == "CVE-2026-1234"
+    assert pending[0]["url"] == "https://a.test/1"
+
+
+def test_cve_never_in_kev_never_escalates():
+    state = State(retention_days=7, kev_retro_days=14)
+    state.mark_published("https://a.test/1", "Flaw", cves=["CVE-2026-1234"])
+    assert state.pending_kev_escalations(["CVE-2026-9999"]) == []
+
+
+def test_escalated_cve_not_repeated():
+    """Once flagged, the same CVE must not fire a second alert every cycle."""
+    state = State(retention_days=7, kev_retro_days=14)
+    state.mark_published("https://a.test/1", "Flaw", cves=["CVE-2026-1234"])
+    assert len(state.pending_kev_escalations(["CVE-2026-1234"])) == 1
+    state.record_kev_escalation("CVE-2026-1234")
+    assert state.pending_kev_escalations(["CVE-2026-1234"]) == []
+
+
+def test_cve_forgotten_past_the_retro_window():
+    """CVEs older than KEV_RETRO_DAYS stop being tracked."""
+    state = State(retention_days=7, kev_retro_days=14)
+    state.mark_published("https://a.test/1", "Flaw", cves=["CVE-2026-1234"])
+    for cve, info in state._published_cves.items():
+        info["ts"] = time.time() - 20 * 86400   # 20 days ago, past the 14d window
+    assert state.tracked_cves() == []
+
+
+def test_cve_retro_window_independent_of_dedup_window():
+    """
+    The two windows are deliberately different: a short RETENTION_DAYS
+    shouldn't cut off CVE tracking early, since KEV listings often lag
+    disclosure by more than a week.
+    """
+    state = State(retention_days=3, kev_retro_days=14)
+    url = "https://a.test/1"
+    state.mark_published(url, "Flaw", cves=["CVE-2026-1234"])
+
+    old_ts = time.time() - 10 * 86400   # past retention, within retro window
+    for info in state._published_cves.values():
+        info["ts"] = old_ts
+    state._seen[url_hash(url)] = old_ts
+
+    assert "CVE-2026-1234" in state.tracked_cves()
+    assert not state.is_known(url)   # dedup window has expired, correctly
+
+
+def test_cve_extracted_from_embed_field_on_priming():
+    """
+    A restarted bot must recover tracked CVEs from the CVE field of
+    already-published embeds, not just from mark_published() calls made
+    in the current process.
+    """
+    channel = FakeChannel([
+        FakeMessage([FakeEmbed("https://a.test/1", "Source · Flaw", cves=["CVE-2026-1234"])])
+    ])
+    state = State(retention_days=7, kev_retro_days=14)
+    asyncio.run(state.prime_from_channel(channel))
+    assert "CVE-2026-1234" in state.tracked_cves()
+
+
+def test_prior_escalation_recovered_on_priming():
+    """
+    A restart must not re-send an escalation alert already posted before
+    the restart — the marker in its footer is what prevents that.
+    """
+    channel = FakeChannel([
+        FakeMessage([FakeEmbed(
+            "https://a.test/1", "Source · Flaw", cves=["CVE-2026-1234"],
+            footer="CVE-2026-1234 · #kev-escalation",
+        )])
+    ])
+    state = State(retention_days=7, kev_retro_days=14)
+    asyncio.run(state.prime_from_channel(channel))
+    assert state.pending_kev_escalations(["CVE-2026-1234"]) == []
+
+
+def test_priming_window_covers_the_longer_of_the_two_settings():
+    """
+    If KEV_RETRO_DAYS exceeds RETENTION_DAYS, priming must still read back
+    far enough to recover CVEs in that extended window.
+    """
+    state = State(retention_days=3, kev_retro_days=14)
+    old_ts = time.time() - 10 * 86400
+    channel = FakeChannel([
+        FakeMessage(
+            [FakeEmbed("https://a.test/1", "Source · Flaw", cves=["CVE-2026-1234"])],
+            age_seconds=int(time.time() - old_ts),
+        )
+    ])
+    asyncio.run(state.prime_from_channel(channel))
+    assert "CVE-2026-1234" in state.tracked_cves()

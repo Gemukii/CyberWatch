@@ -16,7 +16,8 @@ from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
-# Reactions recognized as a vote. Any other reaction is ignored
+# Reactions recognized as a vote. Any other reaction is ignored, leaving
+# 🔖, 👀, or others free for personal use.
 UPVOTE = "👍"
 DOWNVOTE = "👎"
 
@@ -29,9 +30,15 @@ FACTUAL_SIGNALS = frozenset({"kev", "epss", "cve", "cvss"})
 
 
 def encode_signals(signals: list[str]) -> str:
-    """Serializes signals into the embed footer."""
+    """
+    Serializes signals into the embed footer.
+
+    Capped at 4: enough for feedback attribution to work, short enough
+    that the footer stays readable instead of turning into a wall of
+    technical tags.
+    """
     learnable = [s for s in signals if s not in FACTUAL_SIGNALS]
-    return SIGNAL_PREFIX + ",".join(learnable[:8]) if learnable else ""
+    return SIGNAL_PREFIX + ",".join(learnable[:4]) if learnable else ""
 
 
 def decode_signals(footer_text: str) -> list[str]:

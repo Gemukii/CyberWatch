@@ -190,8 +190,20 @@ def _extract_json(raw: str) -> dict:
     except json.JSONDecodeError:
         start, end = text.find("{"), text.rfind("}")
         if start == -1 or end <= start:
-            raise ValueError("No usable JSON in the model's response")
-        parsed = json.loads(text[start : end + 1])
+            # No braces at all: usually means the model answered in plain
+            # prose (a refusal, a safety-filter deflection, an apology)
+            # instead of JSON. The snippet is what turns a guess into a
+            # diagnosis — keep it in the log, not just this message.
+            raise ValueError(
+                f"No usable JSON in the model's response — raw text: {text[:200]!r}"
+            )
+        try:
+            parsed = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            # Braces were found but the content between them still didn't
+            # parse — most often a response truncated mid-object by
+            # maxOutputTokens. Surface the tail, where the cutoff shows.
+            raise ValueError(f"Malformed JSON in the model's response — tail: {text[-200:]!r}")
     if not isinstance(parsed, dict):
         raise ValueError("The model did not return a JSON object")
     return parsed
@@ -249,6 +261,23 @@ def validate_summary(
 
 
 # --- 4. Fallback without AI ---
+def _clean_truncate(text: str, limit: int) -> str:
+    """
+    Truncates on a word boundary with an ellipsis, instead of cutting mid-word.
+
+    The heuristic fallback pulls raw sentences straight from scraped web
+    text — some run well past 250 characters, so a bare slice produces the
+    unreadable mid-word cutoffs this fixes.
+    """
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1]
+    space = cut.rfind(" ")
+    if space > limit * 0.6:
+        cut = cut[:space]
+    return cut.rstrip(" ,.;:-–—") + "…"
+
+
 def heuristic_summary(article: Article, flags: list[str] | None = None) -> Summary:
     """
     Fallback summary: the article's first few sentences, trimmed.
@@ -256,7 +285,9 @@ def heuristic_summary(article: Article, flags: list[str] | None = None) -> Summa
     """
     text = article.content or article.title
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if len(s.strip()) > 40]
-    bullets = [_neutralize(s)[:250] for s in sentences[:3]] or [article.title[:250]]
+    bullets = [_clean_truncate(_neutralize(s), 250) for s in sentences[:3]] or [
+        _clean_truncate(article.title, 250)
+    ]
 
     lowered = f"{article.title} {text}".lower()
     if article.kev_cves or any(
@@ -271,7 +302,7 @@ def heuristic_summary(article: Article, flags: list[str] | None = None) -> Summa
         severity = "Low"
 
     return Summary(
-        title=_neutralize(article.title)[:250],
+        title=_clean_truncate(_neutralize(article.title), 250),
         bullets=bullets,
         severity=severity,
         cves=article.cves[:6],
@@ -372,10 +403,28 @@ class Summarizer:
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.2,       # factual, not creative
-                "maxOutputTokens": 900,
+                "maxOutputTokens": self.s.gemini_max_output_tokens,
                 "responseMimeType": "application/json",
             },
+            # Default safety thresholds are tuned for general chat and
+            # routinely over-block legitimate infosec content: CVE
+            # descriptions, exploit terminology, "remote code execution"
+            # are exactly the vocabulary of a vulnerability advisory, not
+            # a request to generate harmful content. This only summarizes
+            # already-public security news — relaxed, not disabled.
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+            ],
         }
+        if self.s.gemini_disable_thinking:
+            # Gemini 2.5+ models think by default, and those tokens come
+            # out of maxOutputTokens before any visible output is
+            # written — with a modest budget this silently truncates
+            # every response mid-JSON. Flash accepts 0; Pro rejects it.
+            payload["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": self.s.gemini_api_key,  # header only, never in the URL
@@ -406,10 +455,22 @@ class Summarizer:
         candidates = data.get("candidates") or []
         if not candidates:
             raise RuntimeError(f"Empty Gemini response: {str(data)[:200]}")
-        # A response blocked by safety filters arrives with no text.
         reason = candidates[0].get("finishReason")
         parts = candidates[0].get("content", {}).get("parts") or []
         text = "".join(p.get("text", "") for p in parts)
+
+        if reason == "MAX_TOKENS":
+            # The clearest possible signal for the "thinking ate the
+            # budget" failure mode: usageMetadata confirms exactly where
+            # the tokens went, worth logging even when partial text made
+            # it through and will only fail later at JSON parsing.
+            usage = data.get("usageMetadata", {})
+            log.warning(
+                "Gemini hit MAX_TOKENS (thoughts=%s, output=%s) — raise "
+                "GEMINI_MAX_OUTPUT_TOKENS or check GEMINI_DISABLE_THINKING",
+                usage.get("thoughtsTokenCount", "?"), usage.get("candidatesTokenCount", "?"),
+            )
+
         if not text.strip():
             raise RuntimeError(f"Gemini returned no text (finishReason={reason})")
         return text

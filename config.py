@@ -122,6 +122,16 @@ class Settings:
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     # Gemini's free tier now only covers Flash / Flash-Lite.
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    # Gemini 2.5 models "think" by default, and those reasoning tokens are
+    # deducted from maxOutputTokens before any visible text is written —
+    # with a small budget this silently eats the whole response, leaving
+    # nothing for the actual JSON. Flash accepts thinkingBudget=0; Pro
+    # does not (it errors out), so set this to False if GEMINI_MODEL is
+    # a Pro variant.
+    gemini_disable_thinking: bool = _env_bool("GEMINI_DISABLE_THINKING", True)
+    # Headroom for the JSON payload itself (title + up to 4 points + CVEs
+    # + tags). Only matters once thinking no longer eats the budget.
+    gemini_max_output_tokens: int = _env_int("GEMINI_MAX_OUTPUT_TOKENS", 1536)
     ollama_url: str = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "qwen2.5:3b-instruct")
     ai_delay_seconds: float = _env_float("AI_DELAY_SECONDS", 7)
@@ -149,6 +159,18 @@ class Settings:
     history_limit: int = _env_int("HISTORY_LIMIT", 0)
     # Alert if a feed returns nothing for N consecutive cycles.
     feed_failure_threshold: int = _env_int("FEED_FAILURE_THRESHOLD", 3)
+
+    # --- KEV retrospective check ---
+    # A CVE can take days or weeks to reach the KEV catalog after its
+    # article was already published as a routine Medium/High. This
+    # re-checks previously published CVEs on every cycle and escalates
+    # the ones that later get listed — see docs/ARCHITECTURE.md §1.
+    enable_kev_retro_check: bool = _env_bool("ENABLE_KEV_RETRO_CHECK", True)
+    # Longer than RETENTION_DAYS on purpose: KEV listings lag disclosure.
+    kev_retro_days: int = _env_int("KEV_RETRO_DAYS", 14)
+    # Anti-flood guard, same rationale as URGENT_DAILY_MAX: a bulk KEV
+    # catalog update shouldn't dump a wall of escalations at once.
+    kev_retro_max_per_day: int = _env_int("KEV_RETRO_MAX_PER_DAY", 3)
 
     feeds_path: Path = BASE_DIR / os.getenv("FEEDS_FILE", "feeds.yaml")
     feeds: list[dict] = field(default_factory=list)
@@ -191,6 +213,13 @@ class Settings:
                 f"HISTORY_LIMIT={self.history_limit} is below the estimated volume "
                 f"({est_messages:.0f} messages over {self.retention_days}d): "
                 "the anti-duplicate index could be incomplete. Use 0 (unlimited)."
+            )
+        if self.enable_kev_retro_check and self.kev_retro_days < self.retention_days:
+            warns.append(
+                f"KEV_RETRO_DAYS ({self.kev_retro_days}) is shorter than "
+                f"RETENTION_DAYS ({self.retention_days}): CVEs would be forgotten "
+                "before the retrospective check gets a chance to catch a late "
+                "KEV listing. Set it at least as high as RETENTION_DAYS."
             )
         if self.feedback_max_adjustment > self.min_score:
             warns.append(

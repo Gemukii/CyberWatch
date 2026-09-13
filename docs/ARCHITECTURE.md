@@ -65,6 +65,25 @@ guaranteed 429s on the free tier).
 next cycle rather than published with a degraded summary (`DEGRADE_ON_QUOTA`
 if you'd rather have the opposite).
 
+### Stage 6 — KEV retrospective check
+
+everything above only checks a CVE against KEV at the moment its article is
+first collected. but the KEV catalog itself keeps growing — a flaw
+published as routine Medium can get added to KEV days or weeks later, and
+without this stage that escalation is never seen again.
+
+every published CVE is kept in `state._published_cves` (url, title,
+timestamp), on a window of its own — `KEV_RETRO_DAYS` (14d default),
+deliberately longer than `RETENTION_DAYS` (7d) since KEV listings lag
+disclosure. each cycle, after the KEV catalog refresh, tracked CVEs are
+re-checked (`Enricher.in_kev`) and any newly-listed one gets a standalone
+escalation embed linking back to the original article — not a
+re-summary, the escalation itself is the news.
+
+same anti-flood logic as urgent alerts: `KEV_RETRO_MAX_PER_DAY` bounds it,
+and a footer marker (`#kev-escalation`) stops the same CVE firing twice,
+recovered on restart the same way digest/urgent state is.
+
 ---
 
 ## 2. Indirect prompt injection
@@ -120,17 +139,20 @@ discord acts as persistent storage:
 - `embed.author.name` = source + original title (the displayed title is
   reworded by the LLM, so this value is what powers similarity-based
   dedup after a reboot)
+- `embed.fields["CVE"]` = CVEs mentioned, kept for the KEV retrospective
+  check (stage 6) on its own, longer-lived window
 
-startup → re-reads the channel's history over `RETENTION_DAYS`, rebuilds
-the index. bounded by date, not a fixed message count → covers exactly the
-anti-duplicate window regardless of publishing pace.
+startup → re-reads the channel's history over `max(RETENTION_DAYS,
+KEV_RETRO_DAYS)`, rebuilds the index. bounded by date, not a fixed message
+count → covers exactly both windows regardless of publishing pace.
 
 consequences:
 - VPS reboot → no duplicates, index rebuilt identically
 - "read message history" permission required. without it: index starts
   empty, republication possible, `/cyber-status` shows "not primed"
 - channel purged → memory lost, an accepted trade-off
-- footprint: ~150 bytes/article, purged past `RETENTION_DAYS`
+- footprint: ~150 bytes/article, ~80 bytes/tracked CVE, each purged past
+  its own window
 
 `state.py`'s interface (`is_known`, `recent_titles`, `mark_published`) is
 deliberately minimal — a SQLite implementation would swap in behind it as
@@ -188,6 +210,8 @@ same article, but listed in KEV                   score 37 (the fact wins)
 
 first few days: nothing, needs 3 votes on the same signal to kick in.
 `/cyber-feedback` shows where things stand.
+
+other emojis (🔖, 👀...) are ignored by collection, free for personal use.
 
 ---
 

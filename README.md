@@ -87,6 +87,9 @@ notes:
 - feedback never touches the facts
   - votes adjust the lexical signals (`ransomware`, `phishing`...), never KEV/EPSS/CVE/CVSS
   - a vote = personal preference. KEV = fact verified by CISA
+- published CVEs stay tracked after publication, not just at collection time
+  - a flaw can enter the KEV catalog days/weeks after its article already ran as routine Medium
+  - without a retrospective check, that escalation would never surface — the bot only re-checks the past, never revisits it on its own otherwise
 
 full detail → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 

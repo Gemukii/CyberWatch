@@ -86,7 +86,10 @@ class DailyBudget:
             self.tz = timezone.utc
         self.digest_hour = digest_hour
         self._last_digest_date: str | None = None
-        self._urgent_by_date: dict[str, int] = {}
+        # Keyed by (kind, date): shared trimming logic for every daily
+        # counter (urgent alerts, KEV escalations, and whatever comes next)
+        # instead of one hand-duplicated dict per kind.
+        self._daily_counts: dict[tuple[str, str], int] = {}
 
     # ------------------------------------------------------------------ #
     def now(self) -> datetime:
@@ -94,6 +97,17 @@ class DailyBudget:
 
     def today_key(self, moment: datetime | None = None) -> str:
         return (moment or self.now()).strftime("%Y-%m-%d")
+
+    def _count_today(self, kind: str, moment: datetime | None = None) -> int:
+        return self._daily_counts.get((kind, self.today_key(moment)), 0)
+
+    def _note(self, kind: str, count: int = 1, moment: datetime | None = None) -> None:
+        key = (kind, self.today_key(moment))
+        self._daily_counts[key] = self._daily_counts.get(key, 0) + count
+        # Keep only a few days of history per kind.
+        dates = sorted({d for k, d in self._daily_counts if k == kind})
+        for old in dates[:-7]:
+            del self._daily_counts[(kind, old)]
 
     # --- Digest ---
     @property
@@ -135,21 +149,26 @@ class DailyBudget:
 
     # --- Urgent alerts ---
     def urgent_count_today(self, moment: datetime | None = None) -> int:
-        return self._urgent_by_date.get(self.today_key(moment), 0)
+        return self._count_today("urgent", moment)
 
     def note_urgent(self, count: int = 1, moment: datetime | None = None) -> None:
-        key = self.today_key(moment)
-        self._urgent_by_date[key] = self._urgent_by_date.get(key, 0) + count
-        # Keep only a few days of history.
-        for old in sorted(self._urgent_by_date)[:-7]:
-            del self._urgent_by_date[old]
+        self._note("urgent", count, moment)
 
     def note_urgent_from_timestamp(self, ts: float) -> None:
-        moment = datetime.fromtimestamp(ts, tz=self.tz)
-        self.note_urgent(1, moment)
+        self._note("urgent", 1, datetime.fromtimestamp(ts, tz=self.tz))
 
     def urgent_slots_left(self, daily_max: int) -> int:
         return max(0, daily_max - self.urgent_count_today())
+
+    # --- KEV retrospective escalations ---
+    def kev_escalation_count_today(self, moment: datetime | None = None) -> int:
+        return self._count_today("kev_escalation", moment)
+
+    def note_kev_escalation(self, count: int = 1, moment: datetime | None = None) -> None:
+        self._note("kev_escalation", count, moment)
+
+    def kev_escalation_slots_left(self, daily_max: int) -> int:
+        return max(0, daily_max - self.kev_escalation_count_today())
 
 
 def is_urgent(article, settings) -> tuple[bool, str]:

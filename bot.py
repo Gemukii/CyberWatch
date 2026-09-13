@@ -42,7 +42,7 @@ intents = discord.Intents.default()
 
 bot = commands.Bot(command_prefix="!cyberwatch-unused", intents=intents, help_command=None)
 
-state = State(retention_days=settings.retention_days)
+state = State(retention_days=settings.retention_days, kev_retro_days=settings.kev_retro_days)
 summarizer = Summarizer(settings)
 enricher = Enricher(settings)
 
@@ -181,7 +181,9 @@ async def publish_selection(
     # Only articles that actually went out are recorded and removed from
     # the queue. A failed send stays a candidate for the next arbitration.
     for article, summary in posted:
-        state.mark_published(article.url, article.title, article.source, summary.severity)
+        state.mark_published(
+            article.url, article.title, article.source, summary.severity, cves=article.cves
+        )
     queue.remove([state_mod.url_hash(a.url) for a, _ in posted])
 
     report["posted"] = report.get("posted", 0) + len(posted)
@@ -199,7 +201,8 @@ async def run_cycle(channel: discord.abc.Messageable, force_digest: bool = False
     async with cycle_lock:
         report = {
             "fetched": 0, "queued": 0, "queue_size": 0,
-            "urgent": 0, "digest": 0, "posted": 0, "deferred": 0, "error": None,
+            "urgent": 0, "digest": 0, "posted": 0, "deferred": 0,
+            "kev_escalations": 0, "error": None,
         }
         try:
             # Learned weights refreshed BEFORE collection: scoring new
@@ -207,6 +210,32 @@ async def run_cycle(channel: discord.abc.Messageable, force_digest: bool = False
             await refresh_feedback(channel)
 
             await collect(report)
+
+            # --- Path 0: KEV retrospective escalation ---
+            # A CVE can enter the KEV catalog days or weeks after its
+            # article was already published as a routine Medium/High.
+            # collect() just refreshed the catalog via enrichment, so this
+            # runs against current data, not a stale cache.
+            if settings.enable_kev_retro_check:
+                tracked = state.tracked_cves()
+                newly_kev = enricher.in_kev(tracked) if tracked else []
+                pending = state.pending_kev_escalations(newly_kev)
+                slots = budget.kev_escalation_slots_left(settings.kev_retro_max_per_day)
+                if pending and slots > 0:
+                    batch = pending[:slots]
+                    ransomware_cves = {
+                        e["cve"] for e in batch if enricher.kev_ransomware([e["cve"]])
+                    }
+                    sent = await publisher.publish_kev_escalations(
+                        channel, batch, ransomware_cves=ransomware_cves,
+                        mention=settings.urgent_mention,
+                    )
+                    for cve in sent:
+                        state.record_kev_escalation(cve)
+                    budget.note_kev_escalation(len(sent))
+                    report["kev_escalations"] = len(sent)
+                    if sent:
+                        log.warning("KEV retrospective escalation: %s", ", ".join(sent))
 
             # --- Path 1: urgent alerts, published immediately and outside the quota ---
             if settings.enable_urgent:
@@ -553,6 +582,16 @@ async def cyber_status(interaction: discord.Interaction):
         inline=True,
     )
     embed.add_field(name="CISA KEV", value=enricher.status(), inline=True)
+    if settings.enable_kev_retro_check:
+        embed.add_field(
+            name="KEV retro-watch",
+            value=(
+                f"{len(state.tracked_cves())} CVE(s) tracked · "
+                f"{budget.kev_escalation_count_today()}/{settings.kev_retro_max_per_day} "
+                "escalated today"
+            ),
+            inline=True,
+        )
     embed.add_field(
         name=f"Published ({settings.retention_days}d)",
         value=str(state.count_published(settings.retention_days)),
@@ -583,6 +622,8 @@ async def cyber_status(interaction: discord.Interaction):
         )
         if last.get("deferred"):
             value += f" · {last['deferred']} deferred"
+        if last.get("kev_escalations"):
+            value += f" · 🚨 {last['kev_escalations']} KEV escalation(s)"
         if last.get("error"):
             value += f"\n⚠️ `{last['error'][:150]}`"
         embed.add_field(name="Last cycle", value=value, inline=False)
