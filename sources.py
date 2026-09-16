@@ -37,17 +37,21 @@ class Article:
     url: str
     source: str
     source_weight: int = 0
-    summary: str = ""            # description provided by the RSS feed
-    published_ts: float = 0.0    # UTC epoch
-    fulltext: str = ""           # article body, if fetched
+    summary: str = ""
+    published_ts: float = 0.0
+    fulltext: str = ""
 
-    # Enrichment (see enrichment.py)
+    # Enrichment
     cves: list[str] = field(default_factory=list)
-    kev_cves: list[str] = field(default_factory=list)   # present in the CISA KEV catalog
-    kev_ransomware: bool = False                        # tied to a ransomware campaign
-    epss_max: float | None = None                       # 0-1 exploitation probability
+    kev_cves: list[str] = field(default_factory=list)
+    kev_ransomware: bool = False
+    epss_max: float | None = None
 
-    # Filtering (see filters.py)
+    # Classification
+    category: str = "General Security"
+    category_tags: list[str] = field(default_factory=list)
+
+    # Filtering
     score: int = 0
     reasons: list[str] = field(default_factory=list)
 
@@ -55,7 +59,6 @@ class Article:
     def content(self) -> str:
         """Best available text for analysis and summarization."""
         return self.fulltext or self.summary
-
 
 @dataclass
 class FeedResult:

@@ -77,7 +77,20 @@ def build_embed(
     # rebuild the anti-duplicate index on startup (state.py).
     embed.set_author(name=_truncate(f"{article.source} · {article.title}", AUTHOR_LIMIT))
 
-    embed.add_field(name="Severity", value=f"**{summary.severity}**", inline=True)
+    # V1.1 — local category and tags.
+    embed.add_field(
+        name="Category",
+        value=f"**{article.category}**",
+        inline=True,
+    )
+
+    if article.category_tags:
+        tags = " · ".join(f"`{tag}`" for tag in article.category_tags[:8])
+        embed.add_field(
+            name="Topics",
+            value=_truncate(tags, FIELD_LIMIT),
+            inline=False,
+        )
 
     # Authoritative signals: worth more than an adjective in an article.
     if article.kev_cves:
@@ -117,8 +130,13 @@ def build_embed(
         footer += f" · {encoded}"
     if urgent_reason:
         footer += f" · {URGENT_MARKER}"
-    if summary.tags:
-        footer += " · " + " ".join(f"#{t}" for t in summary.tags)
+    if article.category:
+        footer += f" · category={article.category.lower().replace(' ', '-')}"
+    if article.category_tags:
+        footer += " · " + " ".join(
+            f"#{tag.lower().replace(' ', '-')}"
+            for tag in article.category_tags[:5]
+        )
     if summary.generated_by == "heuristic":
         footer += " · summary without AI"
     embed.set_footer(text=_truncate(footer, 300))

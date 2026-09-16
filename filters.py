@@ -13,6 +13,7 @@ from difflib import SequenceMatcher
 
 from sources import Article
 from state import State, normalize_title
+from categories import categorize_article
 
 log = logging.getLogger(__name__)
 
@@ -219,6 +220,9 @@ def select_articles(
             stats["duplicates"] += 1
             log.debug("Duplicate: %s", article.title)
             continue
+
+        # V1.1 - classify locally before scoring
+        categorize_article(article)
 
         article.score, article.reasons = score_article(article)
         if article.score < min_score:
