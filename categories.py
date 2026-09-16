@@ -167,59 +167,95 @@ CATEGORY_RULES: dict[str, dict[str, int]] = {
 
 TAG_RULES: dict[str, str] = {
     "CVE": r"\bcve-\d{4}-\d+\b",
+
     "RCE": r"\bremote code execution\b|\brce\b",
+
     "Zero-Day": r"\bzero[- ]day\b|\b0[- ]day\b",
+
     "Active Exploitation": (
         r"\bactively exploited\b|"
         r"\bexploited in the wild\b|"
         r"\bactive exploitation\b|"
         r"\bexploitation active\b"
     ),
+
     "Proof of Concept": r"\bpoc\b|\bproof[- ]of[- ]concept\b",
+
     "Privilege Escalation": (
         r"\bprivilege escalation\b|"
         r"\bélévation de privilèges\b"
     ),
+
     "Credential Theft": (
-    r"\bcredential(?:s)?\b",
-    r"\bcredential theft\b",
-    r"\bsteal(?:s|ing)?\b.{0,30}\bcredential(?:s)?\b",
-    r"\bharvest(?:s|ing)?\b.{0,30}\bcredential(?:s)?\b",
+        r"\bcredential(?:s)?\b|"
+        r"\bcredential theft\b|"
+        r"\bsteal(?:s|ing)?\b.{0,30}\bcredential(?:s)?\b|"
+        r"\bharvest(?:s|ing)?\b.{0,30}\bcredential(?:s)?\b"
     ),
+
     "Data Leak": (
-    r"\bdata leak\b",
-    r"\bdata leak(?:s)?\b",
-    r"\bleak(?:s|ed|ing)?\b",
-    r"\bexpos(?:e|ed|es|ing)\b.{0,30}\b(?:data|records|information)\b",
-    r"\b(?:data|records|information)\b.{0,30}\bexpos(?:ed|ure)\b",
+        r"\bdata leak\b|"
+        r"\bdata leak(?:s)?\b|"
+        r"\bleak(?:s|ed|ing)?\b|"
+        r"\bexpos(?:e|ed|es|ing)\b.{0,30}\b(?:data|records|information)\b|"
+        r"\b(?:data|records|information)\b.{0,30}\bexpos(?:ed|ure)\b"
     ),
+
     "Backdoor": r"\bbackdoor\b|\bporte dérobée\b",
+
     "Botnet": r"\bbotnet\b",
+
     "APT": r"\bapt\d*\b|\badvanced persistent threat\b",
+
     "Phishing": r"\bphishing\b|\bhameçonnage\b",
+
     "Ransomware": r"\bransomware\b|\brançongiciel\b",
+
     "Supply Chain": r"\bsupply[- ]chain\b",
+
     "Prompt Injection": r"\bprompt injection\b",
+
     "Authentication": r"\bauthentication\b|\bauthentification\b",
+
     "VPN": r"\bvpn\b",
+
     "Firewall": r"\bfirewall\b|\bpare[- ]feu\b",
+
     "Cloud": r"\bcloud\b",
+
     "Kubernetes": r"\bkubernetes\b",
+
     "Docker": r"\bdocker\b",
+
     "Windows": r"\bwindows\b",
+
     "Linux": r"\blinux\b",
+
     "Fortinet": r"\bfortinet\b",
+
     "Cisco": r"\bcisco\b",
+
     "Microsoft": r"\bmicrosoft\b",
+
     "Apple": r"\bapple\b",
+
     "Google": r"\bgoogle\b",
+
     "VMware": r"\bvmware\b",
+
     "Citrix": r"\bcitrix\b",
+
     "Ivanti": r"\bivanti\b",
+
     "Apache": r"\bapache\b",
+
     "WordPress": r"\bwordpress\b",
 }
 
+
+# ---------------------------------------------------------------------------
+# Compiled regular expressions
+# ---------------------------------------------------------------------------
 
 _COMPILED_CATEGORIES = {
     category: [
@@ -235,6 +271,10 @@ _COMPILED_TAGS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Article text
+# ---------------------------------------------------------------------------
+
 def _article_text(article: Article) -> str:
     """
     Text used for classification.
@@ -244,6 +284,10 @@ def _article_text(article: Article) -> str:
     """
     return f"{article.title}\n{article.content[:8000]}"
 
+
+# ---------------------------------------------------------------------------
+# Classification
+# ---------------------------------------------------------------------------
 
 def classify_article(article: Article) -> tuple[str, list[str]]:
     """
@@ -291,6 +335,10 @@ def classify_article(article: Article) -> tuple[str, list[str]]:
 
     return primary_category, tags
 
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def categorize_article(article: Article) -> Article:
     """Mutates and returns the article with its category and tags."""
