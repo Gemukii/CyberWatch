@@ -1,5 +1,6 @@
 from sources import Article
 from filters import score_article, select_articles
+from state import State
 
 
 def make_article(
@@ -13,6 +14,10 @@ def make_article(
         source="Test",
         summary=summary,
     )
+
+
+def make_state() -> State:
+    return State()
 
 
 def test_score_article_returns_score_and_reasons():
@@ -34,7 +39,15 @@ def test_excluded_article_is_not_selected():
         "Join our commercial webinar.",
     )
 
-    selected = select_articles([article])
+    state = make_state()
+
+    selected = select_articles(
+        [article],
+        state,
+        min_score=0,
+        similarity=0.85,
+        limit=5,
+    )
 
     assert article not in selected
 
@@ -45,9 +58,18 @@ def test_select_articles_returns_articles():
         "Researchers found a serious vulnerability.",
     )
 
-    selected = select_articles([article])
+    state = make_state()
+
+    selected = select_articles(
+        [article],
+        state,
+        min_score=0,
+        similarity=0.85,
+        limit=5,
+    )
 
     assert isinstance(selected, list)
+    assert article in selected
 
 
 def test_duplicate_urls_are_removed():
@@ -61,6 +83,14 @@ def test_duplicate_urls_are_removed():
         url="https://example.com/same",
     )
 
-    selected = select_articles([article1, article2])
+    state = make_state()
+
+    selected = select_articles(
+        [article1, article2],
+        state,
+        min_score=0,
+        similarity=0.85,
+        limit=5,
+    )
 
     assert len(selected) <= 1
