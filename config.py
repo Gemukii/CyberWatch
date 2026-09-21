@@ -242,30 +242,39 @@ class Settings:
 def load_feeds(path: Path) -> list[dict]:
     """
     Loads feeds.yaml.
-
+    Supported format:
         feeds:
-          - name: BleepingComputer
-            url: https://www.bleepingcomputer.com/feed/
+          certfr_alertes:
+            url: https://www.cert.ssi.gouv.fr/alerte/feed/
             enabled: true
-            weight: 2
+            weight: 10
+            source_type: official
+            priority: urgent
     """
     if not path.exists():
         return []
+
     with path.open("r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
+
     feeds = []
-    for entry in data.get("feeds", []):
+
+    for name, entry in data.get("feeds", {}).items():
+        if not isinstance(entry, dict):
+            continue
         if not entry.get("enabled", True) or not entry.get("url"):
             continue
         feeds.append(
             {
-                "name": entry.get("name") or entry["url"],
+                "name": name,
                 "url": entry["url"],
                 "weight": int(entry.get("weight", 0)),
+                "source_type": entry.get("source_type", "unknown"),
+                "priority": entry.get("priority", "normal"),
             }
         )
-    return feeds
 
+    return feeds
 
 settings = Settings()
 settings.feeds = load_feeds(settings.feeds_path)
