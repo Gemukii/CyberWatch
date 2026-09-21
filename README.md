@@ -1,207 +1,287 @@
 # CyberWatch
 
-<!-- TODO: 2-3 personal lines here — why this project, context -->
+**CyberWatch is a self-hosted Discord bot for automated cybersecurity intelligence.**
 
-- discord bot for cyber watch, 8 RSS feeds
-- local filter (0 tokens) → KEV/EPSS enrichment → LLM → discord digest
-- 2-4 articles/day, zero cost, no disk writes on the VPS
+It continuously monitors cybersecurity RSS feeds, filters and ranks articles locally, enriches vulnerabilities with trusted security data such as **CISA KEV** and **FIRST EPSS**, and publishes a small number of AI-assisted summaries to Discord.
 
-```
-Python 3.10+ · discord.py · Gemini / Ollama · Docker · 111 tests · CI GitHub Actions
-```
+Since **v1.2**, CyberWatch also provides direct **CVE intelligence** through `/cyber-cve`, combining vulnerability information with CyberWatch's own publication history.
+
+The project follows a simple principle:
+
+> **Keep factual security signals deterministic, use AI only where it adds value, and treat untrusted web content as hostile input.**
+
+## Features
+
+* **Local-first filtering** — articles are filtered, scored and deduplicated without an LLM.
+* **CVE enrichment** — vulnerabilities are enriched with CISA KEV and FIRST EPSS data.
+* **Relative selection** — only the most relevant articles are retained for publication.
+* **Urgent alerts** — high-confidence exploitation signals can trigger an immediate alert.
+* **AI-assisted summaries** — the LLM is only called after article selection.
+* **Security hardening** — untrusted web content is validated before being passed to the LLM.
+* **Feedback loop** — Discord reactions adjust lexical ranking signals without modifying factual security data.
+* **CVE intelligence** — `/cyber-cve` provides vulnerability information and CyberWatch publication history.
+* **No application database** — state is rebuilt from Discord history, keeping the deployment lightweight and disposable.
 
 ## Architecture
 
+### Automated watch cycle
+
 ```mermaid
 flowchart LR
-    subgraph collection["Collection — hourly, 0 tokens"]
-        RSS[8 RSS feeds] --> F[Local filter<br/>exclusion · scoring · dedup]
-        F --> E[Enrichment<br/>CISA KEV · EPSS]
-        E --> Q[(Queue<br/>~15 candidates)]
-    end
+    RSS[Cybersecurity RSS feeds]
+    FILTER[Local filtering]
+    ENRICH[CVE enrichment]
+    QUEUE[Candidate queue]
+    SELECT[Selection & arbitration]
+    LLM[AI summary]
+    DISCORD[Discord]
 
-    subgraph publishing["Publishing — arbitrated"]
-        Q --> U{KEV or<br/>EPSS ≥ 70%}
-        U -->|yes, max 2/day| ALERT[Immediate alert]
-        U -->|no| D[8am digest<br/>top 4 of the day]
-    end
+    RSS --> FILTER
+    FILTER --> ENRICH
+    ENRICH --> QUEUE
+    QUEUE --> SELECT
+    SELECT --> LLM
+    LLM --> DISCORD
 
-    ALERT --> LLM[LLM summary]
-    D --> LLM
-    LLM --> DIS[Discord embeds]
-    DIS -.->|👍 👎 votes| F
+    DISCORD -.-> STATE[Discord-backed state]
+    STATE -.-> FILTER
 ```
 
-notes:
-- filtering is 100% local, LLM only called after final selection → 2-6 calls/day instead of ~150
-- dotted line = feedback loop, votes adjust scoring for later cycles
+Filtering and selection are performed locally. The LLM is only called after the final candidates have been selected.
 
-## Infrastructure
+### CVE intelligence
 
 ```mermaid
-flowchart TB
-    subgraph vps["Linux VPS"]
-        subgraph docker["container — read_only, non-root"]
-            BOT[bot.py<br/>python:3.12-slim]
-            BOT --- MEM[(In-memory state<br/>~100 KB)]
-        end
-        DK[Docker<br/>restart: unless-stopped] --> docker
-    end
+flowchart LR
+    USER[Discord user]
+    CMD["/cyber-cve"]
+    SERVICE[CVE service]
+    NVD[NVD]
+    ENRICH[KEV / EPSS]
+    STATE[CyberWatch state]
+    EMBED[CVE embed]
 
-    BOT -->|HTTPS| RSS[RSS feeds]
-    BOT -->|HTTPS| CISA[CISA KEV<br/>FIRST EPSS]
-    BOT -->|HTTPS| AI[Gemini API<br/>or local Ollama]
-    BOT <-->|WebSocket + REST| DISCORD[(Discord<br/>watch channel)]
-
-    DISCORD -.->|source of truth<br/>on startup| MEM
+    USER --> CMD
+    CMD --> SERVICE
+    SERVICE --> NVD
+    SERVICE --> ENRICH
+    SERVICE --> STATE
+    NVD --> SERVICE
+    ENRICH --> SERVICE
+    STATE --> SERVICE
+    SERVICE --> EMBED
+    EMBED --> USER
 ```
 
-notes:
-- discord = the database. anti-duplicate index + feedback weights rebuilt on startup from channel history
-- no state file on disk, state survives a reboot
+### Automated watch sequence
+
+```mermaid
+sequenceDiagram
+    participant C as CyberWatch
+    participant R as RSS feeds
+    participant E as KEV / EPSS
+    participant L as LLM
+    participant D as Discord
+
+    C->>R: Fetch new articles
+    R-->>C: Articles
+    C->>C: Filter & deduplicate
+    C->>E: Enrich CVEs
+    E-->>C: Security signals
+    C->>C: Rank & select
+
+    C->>L: Summarize selected articles
+    L-->>C: Validated summaries
+    C->>D: Publish embeds
+    D-->>C: Reactions & history
+```
+
+### CVE lookup sequence
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant D as Discord
+    participant B as CyberWatch
+    participant N as NVD
+    participant E as KEV / EPSS
+    participant S as State
+
+    U->>D: /cyber-cve CVE-XXXX
+    D->>B: Command
+    B->>N: Fetch CVE details
+    N-->>B: CVSS / description / references
+    B->>E: Fetch exploitation data
+    E-->>B: KEV / EPSS
+    B->>S: Find related CyberWatch articles
+    S-->>B: Publication history
+    B->>D: Send CVE intelligence embed
+```
+
+Detailed design decisions are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Modules
 
-| File | Role |
-|---|---|
-| `bot.py` | Scheduling, slash commands, watch cycle |
-| `sources.py` | RSS reading, content extraction |
-| `filters.py` | Exclusion, scoring, deduplication |
-| `enrichment.py` | CISA KEV and EPSS clients |
-| `selection.py` | Candidate queue, quotas, urgent/digest arbitration |
-| `summarizer.py` | LLM summary, anti-injection hardening |
-| `feedback.py` | Learning weights from reactions |
-| `publisher.py` | Embed construction |
-| `state.py` | Anti-duplicate index, feed health |
+| File             | Responsibility                                           |
+| ---------------- | -------------------------------------------------------- |
+| `bot.py`         | Scheduling, slash commands and watch cycle               |
+| `sources.py`     | RSS reading and content extraction                       |
+| `filters.py`     | Exclusion, scoring and deduplication                     |
+| `enrichment.py`  | CISA KEV and EPSS clients                                |
+| `selection.py`   | Candidate queue, quotas and arbitration                  |
+| `summarizer.py`  | LLM summaries and prompt-injection defenses              |
+| `feedback.py`    | Learning weights from Discord reactions                  |
+| `publisher.py`   | Discord embed construction                               |
+| `state.py`       | Runtime state, deduplication and publication history     |
+| `cve_service.py` | CVE lookup and aggregation of vulnerability intelligence |
 
-## Decisions
+## Commands
 
-<!-- TODO: reword this, it's the heart of the project -->
-
-- relative selection (top N of the day) instead of a fixed score threshold
-  - a fixed threshold is impossible to calibrate: a silent day could mean "nothing important" or "threshold too high", no way to tell which
-- web content treated as hostile → indirect prompt injection
-  - unicode normalization, random delimiter per request, strict output validation
-  - CVEs absent from the source article = rejected (also blocks hallucinations)
-  - detected attempt → flagged in the embed, not just silently filtered
-- feedback never touches the facts
-  - votes adjust the lexical signals (`ransomware`, `phishing`...), never KEV/EPSS/CVE/CVSS
-  - a vote = personal preference. KEV = fact verified by CISA
-- published CVEs stay tracked after publication, not just at collection time
-  - a flaw can enter the KEV catalog days/weeks after its article already ran as routine Medium
-  - without a retrospective check, that escalation would never surface — the bot only re-checks the past, never revisits it on its own otherwise
-
-full detail → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+| Command           | Description                              |
+| ----------------- | ---------------------------------------- |
+| `/cyber-now`      | Start an immediate collection cycle      |
+| `/cyber-queue`    | Show candidates currently in the queue   |
+| `/cyber-digest`   | Force the daily digest                   |
+| `/cyber-feedback` | Display learned feedback weights         |
+| `/cyber-status`   | Show bot and feed status                 |
+| `/cyber-sources`  | Show RSS feed health                     |
+| `/cyber-cve`      | Look up a CVE and its CyberWatch history |
 
 ## Installation
 
-### Docker (recommended)
+### Docker
 
 ```bash
-git clone <repo> /opt/cyberwatch && cd /opt/cyberwatch
-cp .env.example .env && nano .env
+git clone https://github.com/Gemukii/CyberWatch.git
+cd CyberWatch
+
+cp .env.example .env
+nano .env
+
 docker compose up -d --build
 docker compose logs -f
 ```
 
-the bot writes nothing to disk → no volume, disposable container.
-multi-stage image, non-root user, `read_only: true`, `cap_drop: ALL`.
+The container runs as a non-root user with a read-only filesystem and dropped Linux capabilities.
 
 ### Without Docker
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
+
 pip install -r requirements.txt
-cp .env.example .env && nano .env
+
+cp .env.example .env
+nano .env
+
 python bot.py
 ```
 
-required in `.env`: `DISCORD_TOKEN`, `DISCORD_CHANNEL_ID`, `GEMINI_API_KEY`
-(free key at [AI Studio](https://aistudio.google.com/apikey)).
-`AI_PROVIDER=none` to test without a key.
+Required environment variables:
 
-discord perms: `Send Messages`, `Embed Links`, `Read Message History`, `Add Reactions`
-
-### systemd (Docker alternative)
-
-```bash
-sudo cp cyberwatch.service /etc/systemd/system/
-sudo systemctl enable --now cyberwatch
-journalctl -u cyberwatch -f
+```text
+DISCORD_TOKEN
+DISCORD_CHANNEL_ID
+GEMINI_API_KEY
 ```
 
-### Useful docker commands
+Set `AI_PROVIDER=none` to run without an LLM provider.
 
-```bash
-docker compose restart          # restart
-docker compose logs -f --tail 50
-docker compose up -d --build    # after a code change
-docker compose down             # stop
-```
+Required Discord permissions:
 
-## Commands
+* Send Messages
+* Embed Links
+* Read Message History
+* Add Reactions
 
-| Command | Effect |
-|---|---|
-| `/cyber-now` | Immediate collection cycle |
-| `/cyber-queue` | Candidates in the running, with their scores |
-| `/cyber-digest` | Force the digest to be sent |
-| `/cyber-feedback` | Weights learned from votes |
-| `/cyber-status` | Last cycle, KEV status, feeds down |
-| `/cyber-sources` | Feed health |
+## Configuration
 
-## Settings
+Common settings include:
 
-- volume → `DAILY_QUOTA` (4 by default)
-- `DIGEST_MIN_ARTICLES=2` → quiet day = short watch, not no watch
-- `URGENT_DAILY_MAX=2` → cap on alerts outside the quota
-- scoring keywords: `filters.py` → `KEYWORD_SIGNALS`
-- everything else: `.env.example`
+| Variable              | Purpose                                      |
+| --------------------- | -------------------------------------------- |
+| `DAILY_QUOTA`         | Maximum number of normal articles per digest |
+| `DIGEST_MIN_ARTICLES` | Minimum number of articles for a digest      |
+| `URGENT_DAILY_MAX`    | Maximum number of urgent alerts              |
+| `AI_PROVIDER`         | LLM provider used for summaries              |
 
-## Tests
+Scoring keywords and local ranking signals are defined in `filters.py`.
+
+## Testing
+
+Install development dependencies:
 
 ```bash
 pip install -r requirements-dev.txt
+```
+
+Run the test suite:
+
+```bash
 pytest
 ```
 
-111 tests, no network or Discord. covers scoring, dedup, quota arbitration,
-20 prompt-injection cases, feedback guardrails. CI on py 3.10 + 3.12.
+The test suite is fully local and does not require network access or a running Discord bot. Tests cover the project's filtering, selection, enrichment, publishing and security-related behavior.
 
-## Sources and compliance
+## Data sources
 
-| Source | Data used | Terms |
-|---|---|---|
-| CISA KEV | exploited CVEs, ransomware flag | CC0 / public domain (`cisagov/kev-data` repo) |
-| FIRST EPSS | 30-day exploitation probability | free, no signup — **attribution requested** |
-| RSS feeds | title, link, excerpt, article text | content copyrighted by the publishers |
-| Gemini API | generated summaries | free tier, prompts may be used by Google |
+| Source          | Usage                                                              |
+| --------------- | ------------------------------------------------------------------ |
+| CISA KEV        | Known exploited vulnerabilities and ransomware-related information |
+| FIRST EPSS      | Exploitation probability                                           |
+| NVD             | CVE descriptions, CVSS information and references                  |
+| RSS feeds       | Cybersecurity news and article content                             |
+| Gemini / Ollama | AI-assisted article summaries                                      |
 
-### What the bot does with publisher content
+External vulnerability data is used as supporting intelligence. The original source remains authoritative.
 
-- **never republishes the article** — the summary is reworded, never copied
-- **always links back to the original** in every embed, source is credited
-- **nothing is archived**: no database, no cache. only the URL stays in memory for dedup
-- text retrieval capped at 5 simultaneous connections and a few articles per cycle
-- identifiable User-Agent, no paywall bypass, no authentication bypass
+## Security
 
-posture: personal, non-commercial watch use, no redistribution. commercial
-use or republishing would require checking each publisher's terms of
-service — that's not the case here.
+CyberWatch treats retrieved web content as **untrusted input**.
 
-### Attribution
+The project therefore keeps factual security signals outside the LLM decision process wherever possible and applies validation before accepting generated summaries.
 
-- EPSS: Jacobs, J. et al. — Exploit Prediction Scoring System, FIRST.org
-- KEV: CISA, Known Exploited Vulnerabilities Catalog
+The feedback system only modifies lexical ranking preferences. It never changes CVE, CVSS, KEV or EPSS data.
 
-### What this project is not
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the complete security design.
 
-- not a scanning or exploitation tool — it only reads public feeds, nothing else
-- no personal data collected
-- LLM summaries can contain errors, the original link is authoritative
+## Data and privacy
 
-## Known limitations
+CyberWatch does not maintain an application database.
 
-- RSS feed URLs change without notice — `/cyber-sources` flags it after 3 silent cycles
-- discord channel purged = index lost, articles may be republished once
-- an LLM summary is still a summary — the link to the original article is always in the embed
+Runtime state is kept in memory and reconstructed from the configured Discord channel when necessary. No article archive is maintained by the application.
+
+Publisher content is summarized and linked back to its original source rather than republished.
+
+## Limitations
+
+* RSS feeds can change or become unavailable.
+* Purging the Discord channel removes the state used for deduplication and history reconstruction.
+* External vulnerability APIs can be temporarily unavailable.
+* AI-generated summaries can contain errors; the original article remains authoritative.
+* `/cyber-cve` depends on the availability of the configured vulnerability data sources.
+
+## Roadmap
+
+### v1.2 — CVE Intelligence
+
+* [x] CVE data model
+* [x] NVD integration
+* [x] KEV / EPSS integration
+* [x] `/cyber-cve`
+* [x] CVE Discord embed
+* [x] CyberWatch CVE history
+* [x] Documentation and architecture diagrams
+
+### v1.3 — CVE Watchlist
+
+* [ ] Add CVE to watchlist
+* [ ] Remove CVE from watchlist
+* [ ] List watched CVEs
+* [ ] Notify on meaningful CVE changes
+* [ ] Notify when a CVE enters CISA KEV
+
+## License
+
+MIT
