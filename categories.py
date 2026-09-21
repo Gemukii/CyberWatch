@@ -166,7 +166,7 @@ CATEGORY_RULES: dict[str, dict[str, int]] = {
 # ---------------------------------------------------------------------------
 
 TAG_RULES: dict[str, str] = {
-    "CVE": r"\bcve-\d{4}-\d+\b",
+    "CVE": r"\bcve\b(?:-\d{4}-\d+)?",
 
     "RCE": r"\bremote code execution\b|\brce\b",
 
