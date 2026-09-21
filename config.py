@@ -13,10 +13,7 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# override=False: variables already present in the environment (e.g.
-# injected by systemd) win over the .env file.
 load_dotenv(BASE_DIR / ".env", override=False)
-
 
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name, "").strip()
@@ -112,22 +109,24 @@ class Settings:
         "KEV_URL",
         "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
     )
+
     # EPSS: 30-day exploitation probability (FIRST.org).
     enable_epss: bool = _env_bool("ENABLE_EPSS", True)
     epss_url: str = os.getenv("EPSS_URL", "https://api.first.org/data/v1/epss")
+
+    # NVD: CVE descriptions, CVSS scores and references.
+    nvd_url: str = os.getenv(
+        "NVD_URL",
+        "https://services.nvd.nist.gov/rest/json/cves/2.0",
+    )
+    nvd_api_key: str = os.getenv("NVD_API_KEY", "").strip()
+
     enrichment_ttl_hours: int = _env_int("ENRICHMENT_TTL_HOURS", 12)
 
     # --- AI summarization ---
     ai_provider: str = os.getenv("AI_PROVIDER", "gemini").strip().lower()
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    # Gemini's free tier now only covers Flash / Flash-Lite.
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    # Gemini 2.5 models "think" by default, and those reasoning tokens are
-    # deducted from maxOutputTokens before any visible text is written —
-    # with a small budget this silently eats the whole response, leaving
-    # nothing for the actual JSON. Flash accepts thinkingBudget=0; Pro
-    # does not (it errors out), so set this to False if GEMINI_MODEL is
-    # a Pro variant.
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
     gemini_disable_thinking: bool = _env_bool("GEMINI_DISABLE_THINKING", True)
     # Headroom for the JSON payload itself (title + up to 4 points + CVEs
     # + tags). Only matters once thinking no longer eats the budget.

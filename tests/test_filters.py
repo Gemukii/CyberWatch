@@ -7,14 +7,15 @@ def make_article(
     title: str,
     summary: str = "",
     url: str = "https://example.com/article",
+    fulltext: str = "",
 ) -> Article:
     return Article(
         title=title,
         url=url,
         source="Test",
         summary=summary,
+        fulltext=fulltext,
     )
-
 
 def make_state() -> State:
     return State()
@@ -56,6 +57,13 @@ def test_select_articles_returns_articles():
     article = make_article(
         "Critical security vulnerability discovered",
         "Researchers found a serious vulnerability.",
+        fulltext=(
+            "Researchers discovered a serious security vulnerability "
+            "affecting several systems. The vulnerability could allow "
+            "remote attackers to execute arbitrary code and compromise "
+            "affected installations. Security teams are advised to "
+            "apply the available security updates and review their logs."
+        ),
     )
 
     state = make_state()
@@ -70,7 +78,6 @@ def test_select_articles_returns_articles():
 
     assert isinstance(selected, list)
     assert article in selected
-
 
 def test_duplicate_urls_are_removed():
     article1 = make_article(

@@ -29,6 +29,13 @@ from selection import CandidateQueue, DailyBudget
 from state import State
 from summarizer import Summarizer
 
+from cve_service import (
+    CVEAPIError,
+    CVENotFoundError,
+    CVEService,
+    InvalidCVEIDError,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-7s | %(name)-12s | %(message)s",
@@ -45,6 +52,7 @@ bot = commands.Bot(command_prefix="!cyberwatch-unused", intents=intents, help_co
 state = State(retention_days=settings.retention_days, kev_retro_days=settings.kev_retro_days)
 summarizer = Summarizer(settings)
 enricher = Enricher(settings)
+cve_service = CVEService(settings)
 
 # Prevents two simultaneous cycles (auto loop + manual command).
 queue = CandidateQueue(ttl_hours=settings.candidate_ttl_hours)
@@ -481,6 +489,105 @@ async def cyber_queue(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
+@bot.tree.command(
+    name="cyber-cve",
+    description="Get detailed information about a CVE",
+)
+@app_commands.describe(cve_id="CVE identifier, e.g. CVE-2024-3094")
+@app_commands.checks.cooldown(1, 10.0)
+async def cyber_cve(
+    interaction: discord.Interaction,
+    cve_id: str,
+):
+    """Display detailed information about a CVE."""
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    try:
+        cve = await cve_service.get(cve_id)
+
+    except InvalidCVEIDError:
+        await interaction.followup.send(
+            f"❌ Invalid CVE identifier: `{cve_id}`",
+            ephemeral=True,
+        )
+        return
+
+    except CVENotFoundError:
+        await interaction.followup.send(
+            f"❌ CVE `{cve_id.upper()}` was not found.",
+            ephemeral=True,
+        )
+        return
+
+    except CVEAPIError:
+        log.exception("Failed to retrieve CVE %s", cve_id)
+        await interaction.followup.send(
+            "❌ Unable to retrieve information from the NVD API. "
+            "Please try again later.",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title=f"🛡️ {cve.cve_id}",
+        description=cve.description[:4096],
+        color=0x5865F2,
+    )
+
+    if cve.cvss_score is not None:
+        cvss = f"**{cve.cvss_score:.1f}**"
+
+        if cve.cvss_severity:
+            cvss += f" · {cve.cvss_severity}"
+
+        if cve.cvss_version:
+            cvss += f" (CVSS {cve.cvss_version})"
+
+        embed.add_field(
+            name="CVSS",
+            value=cvss,
+            inline=True,
+        )
+    else:
+        embed.add_field(
+            name="CVSS",
+            value="Not available",
+            inline=True,
+        )
+
+    if cve.published:
+        embed.add_field(
+            name="Published",
+            value=cve.published[:10],
+            inline=True,
+        )
+
+    if cve.last_modified:
+        embed.add_field(
+            name="Last modified",
+            value=cve.last_modified[:10],
+            inline=True,
+        )
+
+    if cve.references:
+        references = "\n".join(
+            f"• {url}" for url in cve.references[:8]
+        )
+
+        embed.add_field(
+            name=f"References ({len(cve.references)})",
+            value=references[:1024],
+            inline=False,
+        )
+
+    embed.set_footer(text="Source: NVD")
+
+    await interaction.followup.send(
+        embed=embed,
+        ephemeral=True,
+    )
 
 @bot.tree.command(
     name="cyber-feedback",
