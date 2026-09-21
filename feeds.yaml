@@ -1,65 +1,72 @@
-# Cybersecurity watch sources.
-#
-# The content of these feeds belongs to their publishers. The bot never
-# republishes it: it summarizes and links back to the original. Before
-# adding a source, check that its RSS feed is public and meant for syndication.
-# weight: score bonus applied to articles from this source (0 = neutral).
-#         Useful to favor official sources (CERT-FR, CISA).
-# enabled: set to false to disable without deleting.
-#
-# Note: feed URLs sometimes change. If a source returns 0 articles for
-#       several days, check its URL in a browser.
-
 feeds:
-  # --- French-language / official sources ---
-  - name: CERT-FR (ANSSI)
-    url: https://www.cert.ssi.gouv.fr/feed/
-    enabled: true
-    weight: 3
+  # ---------------------------------------------------------------------------
+  # 🇫🇷 France — CERT-FR / ANSSI
+  # ---------------------------------------------------------------------------
 
-  - name: CISA Advisories
+  certfr_alertes:
+    url: https://www.cert.ssi.gouv.fr/alerte/feed/
+    weight: 10
+    source_type: official
+    priority: urgent
+    enabled: true
+
+  certfr_avis:
+    url: https://www.cert.ssi.gouv.fr/avis/feed/
+    weight: 10
+    source_type: official
+    priority: high
+    enabled: true
+
+  certfr_actualites:
+    url: https://www.cert.ssi.gouv.fr/actualite/feed/
+    weight: 9
+    source_type: official
+    priority: high
+    enabled: true
+
+  # ---------------------------------------------------------------------------
+  # 🇪🇺 Europe — CERT-EU
+  # ---------------------------------------------------------------------------
+
+  certeu_advisories:
+    url: https://cert.europa.eu/publications/security-advisories-rss
+    weight: 8
+    source_type: official
+    priority: high
+    enabled: true
+
+  certeu_threat_intelligence:
+    url: https://cert.europa.eu/publications/threat-intelligence-rss
+    weight: 8
+    source_type: threat_intel
+    priority: high
+    enabled: true
+
+  certeu_guidance:
+    url: https://cert.europa.eu/publications/security-guidance-rss
+    weight: 6
+    source_type: technical
+    priority: normal
+    enabled: true
+
+  # ---------------------------------------------------------------------------
+  # 🛡️ Vulnerability / Threat Intelligence
+  # ---------------------------------------------------------------------------
+
+  cisa_advisories:
     url: https://www.cisa.gov/cybersecurity-advisories/all.xml
+    weight: 8
+    source_type: official
+    priority: high
     enabled: true
-    weight: 3
 
-  # --- Trade press ---
-  - name: BleepingComputer
-    url: https://www.bleepingcomputer.com/feed/
-    enabled: true
-    weight: 2
+  # ---------------------------------------------------------------------------
+  # 🔧 Technical security research
+  # ---------------------------------------------------------------------------
 
-  - name: The Hacker News
-    url: https://feeds.feedburner.com/TheHackersNews
-    enabled: true
-    weight: 1
-
-  - name: Krebs on Security
-    url: https://krebsonsecurity.com/feed/
-    enabled: true
-    weight: 2
-
-  - name: The Record
-    url: https://therecord.media/feed
-    enabled: true
-    weight: 1
-
-  - name: SecurityWeek
-    url: https://www.securityweek.com/feed/
-    enabled: true
-    weight: 1
-
-  - name: Dark Reading
-    url: https://www.darkreading.com/rss.xml
-    enabled: false
-    weight: 0
-
-  # --- Research / threat intel ---
-  - name: Google Project Zero
+  google_project_zero:
     url: https://googleprojectzero.blogspot.com/feeds/posts/default
-    enabled: false
-    weight: 2
-
-  - name: Sekoia Blog
-    url: https://blog.sekoia.io/feed/
-    enabled: false
-    weight: 1
+    weight: 7
+    source_type: research
+    priority: high
+    enabled: true

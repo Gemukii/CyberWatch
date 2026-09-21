@@ -43,25 +43,75 @@ EXCLUDE_RE = [re.compile(p, re.IGNORECASE) for p in EXCLUDE_PATTERNS]
 # English outlets (BleepingComputer, THN...) and French official sources
 # (CERT-FR, ANSSI), and both need to score correctly.
 KEYWORD_SIGNALS: dict[str, tuple[str, int]] = {
-    "actively-exploited":  (r"\bactively exploited\b|\bexploited in the wild\b|\bexploitation active\b", 5),
-    "zero-day":            (r"\bzero[- ]day\b|\b0[- ]day\b", 5),
-    "ransomware":          (r"\bransomware\b|\brançongiciel\b", 4),
-    "supply-chain":        (r"\bsupply[- ]chain\b|\bchaîne d'approvisionnement\b", 4),
-    "critical-vuln":       (r"\bcritical vulnerability\b|\bvulnérabilité critique\b", 4),
-    "rce":                 (r"\brce\b|\bremote code execution\b|\bexécution de code à distance\b", 4),
-    "data-breach":         (r"\bdata breach\b|\bfuite de données\b|\bviolation de données\b", 3),
-    "privilege-escalation": (r"\bprivilege escalation\b|\bélévation de privilèges\b", 3),
-    "backdoor":            (r"\bbackdoor\b|\bporte dérobée\b", 3),
-    "malware":             (r"\bmalware\b|\bmaliciel\b|\btrojan\b|\bstealer\b|\bbotnet\b", 2),
-    "threat-actor":        (r"\bapt\d*\b|\bthreat actor\b|\bgroupe d'attaquants\b", 2),
-    "phishing":            (r"\bphishing\b|\bhameçonnage\b", 2),
-    "patch":               (r"\bpatch(ed|es)?\b|\bcorrectif\b|\bsecurity update\b|\bmise à jour de sécurité\b", 2),
-    "exploit-poc":         (r"\bpoc\b|\bproof[- ]of[- ]concept\b|\bexploit\b", 2),
-    "official-source":     (r"\bcisa\b|\bkev\b|\banssi\b|\bcert[- ]fr\b", 2),
-    "widespread-product":  (r"\b(windows|linux|vmware|fortinet|cisco|citrix|ivanti|sonicwall|palo alto|"
-                            r"exchange|sharepoint|apache|openssh|kubernetes|docker|wordpress|chrome|"
-                            r"firefox|android|ios|sap|oracle|jenkins|gitlab|atlassian)\b", 2),
+    "actively-exploited": (
+        r"\bactively exploited\b"
+        r"|\bexploited in the wild\b"
+        r"|\bexploitation active\b"
+        r"|\bexploité[e]?\s+activement\b",
+        6,
+    ),
+
+    "zero-day": (
+        r"\bzero[- ]day\b"
+        r"|\b0[- ]day\b"
+        r"|\bzero-day\b",
+        6,
+    ),
+
+    "remote-code-execution": (
+        r"\brce\b"
+        r"|\bremote code execution\b"
+        r"|\bexécution de code à distance\b",
+        5,
+    ),
+
+    "authentication-bypass": (
+        r"\bauthentication bypass\b"
+        r"|\bauth bypass\b"
+        r"|\bcontournement de l'authentification\b",
+        5,
+    ),
+
+    "privilege-escalation": (
+        r"\bprivilege escalation\b"
+        r"|\bélévation de privilèges\b",
+        4,
+    ),
+
+    "security-bypass": (
+        r"\bsecurity bypass\b"
+        r"|\bsecurity control bypass\b"
+        r"|\bcontournement de sécurité\b",
+        4,
+    ),
+
+    "ransomware": (
+        r"\bransomware\b"
+        r"|\brançongiciel\b",
+        4,
+    ),
+
+    "supply-chain": (
+        r"\bsupply[- ]chain\b"
+        r"|\bchaîne d'approvisionnement\b",
+        4,
+    ),
 }
+
+SOURCE_TYPE_BONUS: dict[str, int] = {
+    "official": 4,
+    "threat_intel": 4,
+    "research": 3,
+    "technical": 2,
+    "general": 0,
+}
+
+PRIORITY_BONUS: dict[str, int] = {
+    "urgent": 6,
+    "high": 3,
+    "normal": 0,
+}
+
 
 # Factual signals, not subject to feedback: they describe technical reality
 # (a CVE is in KEV or it isn't), not a reading preference.
@@ -104,6 +154,21 @@ def score_article(article: Article, feedback=None) -> tuple[int, list[str]]:
     score = article.source_weight
     reasons: list[str] = []
     signals: list[str] = []
+
+    # Source type: official and threat-intelligence sources are
+    # more operationally relevant than general news.
+    source_bonus = SOURCE_TYPE_BONUS.get(article.source_type, 0)
+    if source_bonus:
+        score += source_bonus
+        reasons.append(f"source type +{source_bonus}")
+        signals.append(f"source-{article.source_type}")
+
+    # Priority: urgent sources should surface before normal articles.
+    priority_bonus = PRIORITY_BONUS.get(article.priority, 0)
+    if priority_bonus:
+        score += priority_bonus
+        reasons.append(f"priority +{priority_bonus}")
+        signals.append(f"priority-{article.priority}")
 
     for name, pattern, weight in KEYWORD_RE:
         in_title = bool(pattern.search(title))
@@ -167,11 +232,18 @@ def score_article(article: Article, feedback=None) -> tuple[int, list[str]]:
     # Learned adjustment. Applied last, and bounded: feedback shapes the
     # ranking, it doesn't drive it.
     if feedback is not None:
-        delta, explained = feedback.adjustment(signals, article.source)
+        feedback_signals = [
+            signal
+            for signal in signals
+            if not signal.startswith(("source-", "priority-"))
+        ]
+        delta, explained = feedback.adjustment(
+            feedback_signals,
+            article.source,
+        )
         if delta:
             score += delta
             reasons.append(f"feedback {delta:+d} ({explained})")
-
     return score, reasons
 
 

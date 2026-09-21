@@ -37,6 +37,8 @@ class Article:
     url: str
     source: str
     source_weight: int = 0
+    source_type: str = "general"
+    priority: str = "normal"
     summary: str = ""
     published_ts: float = 0.0
     fulltext: str = ""
@@ -89,7 +91,13 @@ def _entry_timestamp(entry) -> float:
     return 0.0
 
 
-def _parse_feed(url: str, name: str, weight: int) -> FeedResult:
+def _parse_feed(
+    url: str,
+    name: str,
+    weight: int,
+    source_type: str,
+    priority: str,
+) -> FeedResult:
     """Parses a feed (run in a thread: feedparser is blocking)."""
     try:
         parsed = feedparser.parse(url)
@@ -114,6 +122,8 @@ def _parse_feed(url: str, name: str, weight: int) -> FeedResult:
                 url=link,
                 source=name,
                 source_weight=weight,
+                source_type=source_type,
+                priority=priority,
                 summary=_strip_html(raw_summary)[:2000],
                 published_ts=_entry_timestamp(entry),
             )
@@ -131,7 +141,14 @@ async def fetch_all_feeds(
     tracking: a dead feed needs to be visible, not silent.
     """
     tasks = [
-        asyncio.to_thread(_parse_feed, feed["url"], feed["name"], feed["weight"])
+        asyncio.to_thread(
+            _parse_feed,
+            feed["url"],
+            feed["name"],
+            feed["weight"],
+            feed.get("source_type", "general"),
+            feed.get("priority", "normal"),
+        )
         for feed in feeds
     ]
     raw_results = await asyncio.gather(*tasks, return_exceptions=True)
