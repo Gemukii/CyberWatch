@@ -1,146 +1,191 @@
-## 2. CVE intelligence
+# CyberWatch Architecture
 
-### Motivation
+CyberWatch is organized as a processing pipeline. Articles move through several specialized modules before being selected, summarized and published to Discord.
 
-The existing enrichment pipeline uses CVE information to improve article ranking and detect exploitation signals.
+## Overview
 
-This is useful for automated monitoring, but it does not provide a way for a user to directly investigate a vulnerability from Discord.
+```mermaid
+flowchart LR
+    CONFIG["config.py"]
+    SOURCES["sources.py"]
+    COLLECTOR["collector.py"]
+    FILTERS["filters.py"]
+    CATEGORIES["categories.py"]
+    ENRICHMENT["enrichment.py"]
+    CVE["cve_service.py"]
+    SELECTION["selection.py"]
+    SUMMARIZER["summarizer.py"]
+    PUBLISHER["publisher.py"]
+    STATE["state.py"]
+    FEEDBACK["feedback.py"]
+    BOT["bot.py"]
+    DISCORD["Discord"]
 
-Version 1.2 introduces `/cyber-cve` to expose this information directly.
-
-The feature intentionally reuses the existing KEV and EPSS infrastructure instead of creating a second implementation of those clients.
-
-### Responsibilities
-
-The CVE lookup is split into separate responsibilities:
-
-```text
-Discord command
-      │
-      ▼
-    bot.py
-      │
-      ▼
-cve_service.py
-   ┌──┼───────────────┐
-   ▼  ▼               ▼
- NVD KEV/EPSS      state.py
-   │  │               │
-   └──┴───────┬───────┘
-               ▼
-         CVE information
-               │
-               ▼
-          publisher.py
-               │
-               ▼
-            Discord
+    CONFIG --> BOT
+    SOURCES --> COLLECTOR
+    BOT --> COLLECTOR
+    COLLECTOR --> FILTERS
+    FILTERS --> CATEGORIES
+    CATEGORIES --> ENRICHMENT
+    ENRICHMENT --> CVE
+    CVE --> SELECTION
+    SELECTION --> SUMMARIZER
+    SUMMARIZER --> PUBLISHER
+    PUBLISHER --> DISCORD
+    PUBLISHER --> STATE
+    DISCORD --> FEEDBACK
 ```
 
-### `CVEInfo`
+## Components
 
-`CVEInfo` is the internal representation of a vulnerability.
+CyberWatch separates the main processing pipeline from supporting services.
 
-It separates vulnerability data from article data and allows the same CVE information to be used by Discord commands and future monitoring features.
+### Core pipeline
 
-The model contains only structured vulnerability information, such as:
+| Component       | Role                                                  |
+| --------------- | ----------------------------------------------------- |
+| `bot.py`        | Runs the Discord bot and orchestrates the application |
+| `sources.py`    | Loads and manages configured RSS sources              |
+| `collector.py`  | Fetches and normalizes articles                       |
+| `filters.py`    | Removes irrelevant or invalid articles                |
+| `categories.py` | Assigns article categories                            |
+| `enrichment.py` | Adds additional information to articles               |
+| `selection.py`  | Selects articles for publication                      |
+| `summarizer.py` | Generates publication summaries                       |
+| `publisher.py`  | Creates and sends Discord messages                    |
 
-* CVE identifier
-* description
-* CVSS information
-* EPSS information
-* CISA KEV status
-* ransomware information when available
-* references
-* publication metadata
+### Supporting services
 
-### `cve_service.py`
+| Component        | Role                                                |
+| ---------------- | --------------------------------------------------- |
+| `config.py`      | Loads application configuration                     |
+| `cve_service.py` | Handles CVE-related information                     |
+| `state.py`       | Maintains publication state and prevents duplicates |
+| `feedback.py`    | Handles user feedback                               |
 
-`cve_service.py` is the orchestration layer for CVE lookups.
+## Article processing
 
-The Discord bot does not directly communicate with the individual vulnerability APIs.
+The main processing flow is:
 
-This keeps:
+```mermaid
+sequenceDiagram
+    participant B as Bot
+    participant C as Collector
+    participant F as Filters
+    participant CA as Categories
+    participant E as Enrichment
+    participant S as Selection
+    participant SU as Summarizer
+    participant P as Publisher
 
-* API handling out of `bot.py`
-* external data sources replaceable
-* error handling centralized
-* the feature independently testable
+    B->>C: Fetch configured feeds
+    C-->>B: Normalized articles
 
-### NVD
+    loop Each article
+        B->>F: Validate and filter
+        F-->>B: Accepted / rejected
 
-NVD provides the general CVE information required by `/cyber-cve`, including vulnerability descriptions, CVSS information and references.
+        alt Article accepted
+            B->>CA: Categorize
+            CA-->>B: Category
 
-KEV and EPSS are intentionally not treated as replacements for NVD.
+            B->>E: Enrich
+            E-->>B: Enriched article
 
-They answer different questions:
+            B->>S: Evaluate article
+            S-->>B: Selected / rejected
 
-* NVD: what is the vulnerability?
-* KEV: is it known to be exploited?
-* EPSS: how likely is exploitation according to the EPSS model?
-
-### KEV and EPSS reuse
-
-CyberWatch already retrieves CISA KEV and FIRST EPSS data during article enrichment.
-
-Version 1.2 reuses these existing clients instead of duplicating their implementation.
-
-This keeps the automated watch pipeline and interactive CVE lookup based on the same security signals.
-
-### CyberWatch history
-
-`state.py` already maintains the information required to prevent duplicate publications and track published CVEs.
-
-Version 1.2 exposes this information through the CVE service.
-
-For a requested CVE, CyberWatch can therefore distinguish:
-
-```text
-External vulnerability intelligence
-        +
-CyberWatch publication history
+            alt Article selected
+                B->>SU: Generate summary
+                SU-->>B: Summary
+                B->>P: Publish
+            end
+        end
+    end
 ```
 
-This means `/cyber-cve` provides context specific to the bot rather than acting as a simple NVD wrapper.
+## Publication state
 
-### Error handling
+Publication state is handled separately from the article processing pipeline.
 
-External services are not assumed to be permanently available.
+Its purpose is to prevent an article from being repeatedly published while keeping publication state consistent with the actual Discord result.
 
-The CVE service must handle:
+```mermaid
+sequenceDiagram
+    participant P as Publisher
+    participant D as Discord
+    participant S as State
 
-* invalid CVE identifiers
-* CVEs not found
-* API timeouts
-* HTTP errors
-* incomplete vulnerability data
-* unavailable KEV or EPSS services
+    P->>D: Send article
 
-A failure of one enrichment source should not cause the Discord bot to crash.
-
-### Why no database?
-
-The CVE lookup does not introduce a new database.
-
-CyberWatch already follows a disposable architecture where application state is reconstructed from Discord history.
-
-Adding a database only for `/cyber-cve` would introduce another persistent component without being necessary for the feature.
-
-The v1.2 implementation therefore keeps the same architecture.
-
-### Future extension
-
-This separation intentionally prepares the project for the v1.3 CVE watchlist.
-
-A future watchlist can reuse:
-
-```text
-CVE service
-    │
-    ├── NVD
-    ├── KEV
-    ├── EPSS
-    └── CyberWatch state
+    alt Publication succeeds
+        D-->>P: Success
+        P->>S: Record publication
+    else Publication fails
+        D-->>P: Error
+        P-->>P: Do not record publication
+    end
 ```
 
-without modifying the existing article collection pipeline.
+This means a failed Discord publication does not permanently mark the article as published.
+
+## Feedback
+
+User feedback is handled after publication.
+
+```mermaid
+flowchart LR
+    DISCORD["Published article"]
+    --> USER["Discord user"]
+    --> FEEDBACK["feedback.py"]
+```
+
+Feedback is kept separate from the article processing stages so that user interaction does not directly alter the collection pipeline.
+
+## Configuration
+
+Runtime configuration is handled by `config.py`.
+
+RSS sources are maintained separately in:
+
+```text
+feeds.yaml
+```
+
+This keeps source configuration out of the application logic and allows feeds to be modified without changing the processing modules.
+
+## Tests
+
+Tests are located in:
+
+```text
+tests/
+├── test_categories.py
+├── test_filters.py
+└── test_state.py
+```
+
+They focus on core processing behavior and state management.
+
+## Deployment
+
+CyberWatch supports containerized deployment through:
+
+```text
+Dockerfile
+docker-compose.yml
+```
+
+The repository also contains a systemd service definition:
+
+```text
+cyberwatch.service
+```
+
+Automated tests are defined in:
+
+```text
+.github/workflows/tests.yml
+```
+
+The architecture intentionally keeps each processing step isolated so that individual parts can be tested and modified without having to change the entire pipeline.
