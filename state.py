@@ -108,6 +108,10 @@ class State:
         self._kev_escalated: set[str] = set()   # CVEs already flagged once
         self._primed = False
         self.started_at = time.time()
+        self._last_cycle_started_at: int | None = None
+        self._last_cycle_finished_at: int | None = None
+        self._consecutive_cycle_failures = 0
+        self._last_cycle_error: str | None = None
 
     # --- Priming from Discord ---
     @property
@@ -311,6 +315,11 @@ class State:
         return lines
 
     # --- Statistics ---
+    def note_cycle_started(self) -> int:
+        """Records that a scheduled or manual cycle has started."""
+        self._last_cycle_started_at = int(time.time())
+        return self._last_cycle_started_at
+
     def log_run(
         self,
         fetched: int = 0,
@@ -325,9 +334,12 @@ class State:
     ) -> None:
         """Records a cycle's outcome. Counters separate collection
         (continuous) from publishing (arbitrated)."""
+        finished_at = int(time.time())
+        started_at = self._last_cycle_started_at or finished_at
         self._runs.append(
             {
-                "started_at": int(time.time()),
+                "started_at": started_at,
+                "finished_at": finished_at,
                 "fetched": fetched,
                 "queued": queued,
                 "queue_size": queue_size,
@@ -339,9 +351,24 @@ class State:
                 "error": error,
             }
         )
+        self._last_cycle_finished_at = finished_at
+        self._last_cycle_error = error
+        if error:
+            self._consecutive_cycle_failures += 1
+        else:
+            self._consecutive_cycle_failures = 0
 
     def last_run(self) -> dict | None:
         return self._runs[-1] if self._runs else None
+
+    def cycle_health(self) -> dict:
+        """Returns the runtime signals used by supervision commands."""
+        return {
+            "started_at": self._last_cycle_started_at,
+            "finished_at": self._last_cycle_finished_at,
+            "consecutive_failures": self._consecutive_cycle_failures,
+            "last_error": self._last_cycle_error,
+        }
 
     def count_published(self, days: int = 7) -> int:
         cutoff = time.time() - days * 86400

@@ -105,3 +105,23 @@ def test_feed_recovery_resets_failure_counter():
     ])
 
     assert state.unhealthy_feeds(threshold=1) == []
+
+
+def test_cycle_health_tracks_failures_and_recovery():
+    state = State()
+
+    started_at = state.note_cycle_started()
+    state.log_run(error="Discord channel unavailable")
+
+    health = state.cycle_health()
+    assert health["started_at"] == started_at
+    assert health["finished_at"] is not None
+    assert health["consecutive_failures"] == 1
+    assert health["last_error"] == "Discord channel unavailable"
+
+    state.note_cycle_started()
+    state.log_run(fetched=3)
+
+    health = state.cycle_health()
+    assert health["consecutive_failures"] == 0
+    assert health["last_error"] is None

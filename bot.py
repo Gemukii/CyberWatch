@@ -207,6 +207,7 @@ async def run_cycle(channel: discord.abc.Messageable, force_digest: bool = False
     2-4 articles a day while still watching feeds every hour.
     """
     async with cycle_lock:
+        state.note_cycle_started()
         report = {
             "fetched": 0, "queued": 0, "queue_size": 0,
             "urgent": 0, "digest": 0, "posted": 0, "deferred": 0,
@@ -329,8 +330,10 @@ async def resolve_channel():
 @tasks.loop(minutes=settings.interval_minutes)
 async def scheduled_watch():
     """Automatic loop. The first run starts right after connecting."""
+    state.note_cycle_started()
     channel = await resolve_channel()
     if channel is None:
+        state.log_run(error="Discord channel unavailable")
         return
     await run_cycle(channel)
 
@@ -660,7 +663,16 @@ async def cyber_feedback(interaction: discord.Interaction):
 
 @bot.tree.command(name="cyber-status", description="Bot status and last cycle")
 async def cyber_status(interaction: discord.Interaction):
-    embed = discord.Embed(title="📊 Watch status", color=0x5865F2)
+    health = state.cycle_health()
+    if health["consecutive_failures"]:
+        status_label, status_color = "🔴 degraded", 0xE01E37
+    elif health["finished_at"] is None:
+        status_label, status_color = "🟡 starting", 0xF2C14E
+    else:
+        status_label, status_color = "🟢 operational", 0x4C9F70
+
+    embed = discord.Embed(title="📊 Watch status", color=status_color)
+    embed.add_field(name="Runtime", value=status_label, inline=True)
     embed.add_field(name="Active feeds", value=str(len(settings.feeds)), inline=True)
     embed.add_field(name="Collection", value=f"every {settings.interval_minutes} min", inline=True)
     embed.add_field(name="AI engine", value=settings.ai_provider, inline=True)
@@ -736,6 +748,16 @@ async def cyber_status(interaction: discord.Interaction):
         embed.add_field(name="Last cycle", value=value, inline=False)
     else:
         embed.add_field(name="Last cycle", value="none yet", inline=False)
+
+    if health["started_at"]:
+        cycle_value = f"started <t:{health['started_at']}:R>"
+        if health["finished_at"]:
+            cycle_value += f" · finished <t:{health['finished_at']}:R>"
+        if health["consecutive_failures"]:
+            cycle_value += f"\n{health['consecutive_failures']} consecutive failure(s)"
+        if health["last_error"]:
+            cycle_value += f"\n⚠️ `{health['last_error'][:150]}`"
+        embed.add_field(name="Runtime heartbeat", value=cycle_value, inline=False)
 
     await interaction.response.send_message(embed=embed)
 
