@@ -2,7 +2,7 @@
 Learning scoring weights from 👍/👎 reactions.
 
 Votes live in Discord, so weights are recomputed from history rather than
-stored. Guardrails and math: docs/ARCHITECTURE.md §4.
+stored. Guardrails and math: docs/ARCHITECTURE.md.
 """
 
 from __future__ import annotations

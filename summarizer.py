@@ -2,7 +2,7 @@
 Article summarization via Gemini (REST), Ollama, or a heuristic fallback.
 
 Web content is treated as hostile: sanitization, nonce-based isolation,
-strict output validation. See docs/ARCHITECTURE.md §2.
+strict output validation. See docs/ARCHITECTURE.md.
 """
 
 from __future__ import annotations

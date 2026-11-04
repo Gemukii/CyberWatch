@@ -2,7 +2,7 @@
 Candidate queue, daily quotas, urgent/digest arbitration.
 
 Articles aren't published on arrival: they compete against each other and
-only the best of the day make it out. See docs/ARCHITECTURE.md §1.
+only the best of the day make it out. See docs/ARCHITECTURE.md.
 """
 
 from __future__ import annotations
@@ -167,8 +167,32 @@ class DailyBudget:
     def note_kev_escalation(self, count: int = 1, moment: datetime | None = None) -> None:
         self._note("kev_escalation", count, moment)
 
+    def note_kev_escalation_from_timestamp(self, ts: float) -> None:
+        """Used during startup priming, by re-reading Discord history."""
+        self._note("kev_escalation", 1, datetime.fromtimestamp(ts, tz=self.tz))
+
     def kev_escalation_slots_left(self, daily_max: int) -> int:
         return max(0, daily_max - self.kev_escalation_count_today())
+
+
+def distinct_stories(articles: list, covered_cves=()) -> list:
+    """
+    Keeps one article per story, given articles sorted best first.
+
+    Outlets word their headlines differently, so title similarity misses
+    them, but the CVE gives the story away. An article only drops out if it
+    brings no new CVE: `covered_cves` are the ones already published.
+    Articles without any CVE always stay.
+    """
+    covered = {cve.upper() for cve in covered_cves}
+    kept = []
+    for article in articles:
+        cves = {cve.upper() for cve in getattr(article, "cves", None) or []}
+        if cves and cves <= covered:
+            continue
+        covered |= cves
+        kept.append(article)
+    return kept
 
 
 def is_urgent(article, settings) -> tuple[bool, str]:

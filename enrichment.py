@@ -92,6 +92,19 @@ class Enricher:
             self._kev_error = f"{type(exc).__name__}: {exc}"
             log.warning("Could not load KEV catalog: %s", self._kev_error)
 
+    async def ensure_kev(self) -> None:
+        """
+        Loads the catalog outside of `enrich()`.
+
+        `enrich()` only runs when a cycle has articles to process, but the
+        retrospective check needs the catalog on quiet cycles too. No-op
+        while the cache is fresh.
+        """
+        timeout = aiohttp.ClientTimeout(total=self.s.http_timeout)
+        headers = {"User-Agent": self.s.user_agent}
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            await self.refresh_kev(session)
+
     def in_kev(self, cves: list[str]) -> list[str]:
         """Subset of CVEs present in the KEV catalog."""
         if not self._kev:

@@ -2,7 +2,7 @@
 Pre-filtering without AI: promo exclusion, scoring, deduplication.
 
 This is what keeps the LLM cost at zero — only survivors get summarized.
-Scoring and mechanics: docs/ARCHITECTURE.md §1.
+Scoring and mechanics: docs/ARCHITECTURE.md.
 """
 
 from __future__ import annotations

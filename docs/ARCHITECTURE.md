@@ -8,7 +8,6 @@ CyberWatch is organized as a processing pipeline. Articles move through several 
 flowchart LR
     CONFIG["config.py"]
     SOURCES["sources.py"]
-    COLLECTOR["collector.py"]
     FILTERS["filters.py"]
     CATEGORIES["categories.py"]
     ENRICHMENT["enrichment.py"]
@@ -22,9 +21,9 @@ flowchart LR
     DISCORD["Discord"]
 
     CONFIG --> BOT
-    SOURCES --> COLLECTOR
-    BOT --> COLLECTOR
-    COLLECTOR --> FILTERS
+    BOT --> PIPELINE["pipeline.py"]
+    PIPELINE --> SOURCES
+    SOURCES --> FILTERS
     FILTERS --> CATEGORIES
     CATEGORIES --> ENRICHMENT
     ENRICHMENT --> CVE
@@ -44,9 +43,10 @@ CyberWatch separates the main processing pipeline from supporting services.
 
 | Component       | Role                                                  |
 | --------------- | ----------------------------------------------------- |
-| `bot.py`        | Runs the Discord bot and orchestrates the application |
-| `sources.py`    | Loads and manages configured RSS sources              |
-| `collector.py`  | Fetches and normalizes articles                       |
+| `bot.py`        | Resident Discord bot: scheduling and slash commands   |
+| `run_once.py`   | One cycle over Discord REST, for a scheduler          |
+| `pipeline.py`   | The watch cycle, shared by both entry points          |
+| `sources.py`    | Fetches feeds and extracts article text               |
 | `filters.py`    | Removes irrelevant or invalid articles                |
 | `categories.py` | Assigns article categories                            |
 | `enrichment.py` | Adds additional information to articles               |
@@ -70,7 +70,7 @@ The main processing flow is:
 ```mermaid
 sequenceDiagram
     participant B as Bot
-    participant C as Collector
+    participant C as Sources
     participant F as Filters
     participant CA as Categories
     participant E as Enrichment
@@ -129,6 +129,8 @@ sequenceDiagram
 
 This means a failed Discord publication does not permanently mark the article as published.
 
+A one-shot run starts with nothing in memory, so `run_once.py` rebuilds this state from Discord history before each cycle. If that history can't be read, the run stops without publishing: an empty index would publish everything again.
+
 ## Feedback
 
 User feedback is handled after publication.
@@ -161,15 +163,22 @@ Tests are located in:
 ```text
 tests/
 ├── test_categories.py
+├── test_discord_rest.py
 ├── test_filters.py
-└── test_state.py
+├── test_pipeline.py
+├── test_run_once.py
+├── test_sources.py
+├── test_state.py
+└── test_summarizer.py
 ```
 
-They focus on core processing behavior and state management.
+They focus on core processing and state across runs. `test_discord_rest.py` runs the real discord.py client against a local stand-in for the API.
 
 ## Deployment
 
-CyberWatch supports containerized deployment through:
+The default deployment needs no server: `.github/workflows/watch.yml` runs `run_once.py` hourly. See [ADR-001](adr/001-serverless-hosting.md).
+
+To keep the slash commands, `bot.py` can run on a server instead, through:
 
 ```text
 Dockerfile

@@ -1,8 +1,7 @@
 """
 Collection: reading RSS/Atom feeds and extracting article bodies.
 
-feedparser is synchronous (run in a thread), page downloads are async
-via aiohttp.
+Downloads are async via aiohttp; feedparser only parses, in a thread.
 """
 
 from __future__ import annotations
@@ -92,15 +91,15 @@ def _entry_timestamp(entry) -> float:
 
 
 def _parse_feed(
-    url: str,
+    raw: bytes,
     name: str,
     weight: int,
     source_type: str,
     priority: str,
 ) -> FeedResult:
-    """Parses a feed (run in a thread: feedparser is blocking)."""
+    """Parses an already-downloaded feed (run in a thread: CPU-bound)."""
     try:
-        parsed = feedparser.parse(url)
+        parsed = feedparser.parse(raw)
     except Exception as exc:
         return FeedResult(name=name, error=f"{type(exc).__name__}: {exc}")
 
@@ -131,8 +130,37 @@ def _parse_feed(
     return FeedResult(name=name, articles=articles)
 
 
+async def _fetch_feed(session: aiohttp.ClientSession, feed: dict) -> FeedResult:
+    """
+    Downloads then parses one feed.
+
+    The download goes through aiohttp rather than feedparser's own fetcher,
+    which has no timeout: one stalled server would hang the whole cycle.
+    """
+    name = feed["name"]
+    try:
+        async with session.get(feed["url"], allow_redirects=True) as resp:
+            if resp.status != 200:
+                return FeedResult(name=name, error=f"HTTP {resp.status}")
+            raw = await resp.read()
+    except Exception as exc:  # network, timeout, SSL...
+        return FeedResult(name=name, error=f"{type(exc).__name__}: {exc}")
+
+    return await asyncio.to_thread(
+        _parse_feed,
+        raw,
+        name,
+        feed["weight"],
+        feed.get("source_type", "general"),
+        feed.get("priority", "normal"),
+    )
+
+
 async def fetch_all_feeds(
-    feeds: list[dict], max_age_hours: int
+    feeds: list[dict],
+    max_age_hours: int,
+    user_agent: str = "CyberWatchBot/2.0",
+    timeout: int = 20,
 ) -> tuple[list[Article], list[FeedResult]]:
     """
     Fetches all feeds in parallel and keeps only recent articles.
@@ -140,18 +168,14 @@ async def fetch_all_feeds(
     Returns (articles, per-feed results). The second element feeds health
     tracking: a dead feed needs to be visible, not silent.
     """
-    tasks = [
-        asyncio.to_thread(
-            _parse_feed,
-            feed["url"],
-            feed["name"],
-            feed["weight"],
-            feed.get("source_type", "general"),
-            feed.get("priority", "normal"),
+    client_timeout = aiohttp.ClientTimeout(total=timeout)
+    async with aiohttp.ClientSession(
+        timeout=client_timeout, headers={"User-Agent": user_agent}
+    ) as session:
+        raw_results = await asyncio.gather(
+            *(_fetch_feed(session, feed) for feed in feeds),
+            return_exceptions=True,
         )
-        for feed in feeds
-    ]
-    raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
     cutoff = time.time() - max_age_hours * 3600
     articles: list[Article] = []

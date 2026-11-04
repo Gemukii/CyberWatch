@@ -1,33 +1,22 @@
 #!/usr/bin/env python3
 """
-Entry point: scheduling, slash commands, watch cycle.
+Resident Discord bot: scheduling and slash commands.
 
-A cycle always collects, but only publishes on a confirmed urgent alert or
-at digest time. Pipeline details: docs/ARCHITECTURE.md
+Needs a process that stays online. The cycle itself lives in pipeline.py;
+run_once.py runs it without a resident process, minus the slash commands.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import sys
-import time
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-import feedback as feedback_mod
-import filters
-import publisher
-import selection
-import sources
-import state as state_mod
 from config import settings
-from enrichment import Enricher
-from selection import CandidateQueue, DailyBudget
-from state import State
-from summarizer import Summarizer
+from pipeline import Pipeline
 
 from cve_service import (
     CVEAPIError,
@@ -49,270 +38,13 @@ intents = discord.Intents.default()
 
 bot = commands.Bot(command_prefix="!cyberwatch-unused", intents=intents, help_command=None)
 
-state = State(retention_days=settings.retention_days, kev_retro_days=settings.kev_retro_days)
-summarizer = Summarizer(settings)
-enricher = Enricher(settings)
+pipeline = Pipeline(settings)
+state = pipeline.state
+queue = pipeline.queue
+budget = pipeline.budget
+enricher = pipeline.enricher
+cycle_lock = pipeline.cycle_lock
 cve_service = CVEService(settings)
-
-# Prevents two simultaneous cycles (auto loop + manual command).
-queue = CandidateQueue(ttl_hours=settings.candidate_ttl_hours)
-
-# Weights learned from 👍/👎 reactions. Recomputed periodically from
-# Discord history, never stored: see feedback.py.
-learned = feedback_mod.LearnedWeights(
-    min_votes=settings.feedback_min_votes,
-    max_adjustment=settings.feedback_max_adjustment,
-)
-_feedback_refreshed_at = 0.0
-
-
-async def refresh_feedback(channel, force: bool = False) -> bool:
-    """
-    Recomputes learned weights if the cache has expired.
-
-    Re-reading history costs Discord API calls: this only runs once per
-    `FEEDBACK_TTL_HOURS`, not every cycle.
-    """
-    global learned, _feedback_refreshed_at
-    if not settings.enable_feedback or channel is None:
-        return False
-    if not force and (time.time() - _feedback_refreshed_at) < settings.feedback_ttl_hours * 3600:
-        return False
-    learned = await feedback_mod.collect_feedback(
-        channel,
-        lookback_days=settings.feedback_lookback_days,
-        min_votes=settings.feedback_min_votes,
-        max_adjustment=settings.feedback_max_adjustment,
-        message_limit=settings.feedback_message_limit,
-    )
-    _feedback_refreshed_at = time.time()
-    return True
-budget = DailyBudget(
-    timezone_name=settings.timezone_name,
-    digest_hour=settings.digest_hour,
-)
-
-cycle_lock = asyncio.Lock()
-
-
-# --- Watch cycle ---
-async def collect(report: dict) -> list:
-    """
-    Free step: collects, filters, enriches, and feeds the candidate queue.
-    No AI call happens here, so it can run every hour at no cost.
-    """
-    articles, feed_results = await sources.fetch_all_feeds(
-        settings.feeds, settings.max_age_hours
-    )
-    state.record_feed_results(feed_results)
-    report["fetched"] = len(articles)
-
-    unhealthy = state.unhealthy_feeds(settings.feed_failure_threshold)
-    if unhealthy:
-        log.warning("Feeds down: %s", ", ".join(f.name for f in unhealthy))
-
-    if not articles:
-        return []
-
-    # Pre-filter on title + RSS summary, lowered threshold: keeps margin
-    # before the network-costly steps.
-    shortlist = filters.select_articles(
-        articles,
-        state,
-        min_score=max(1, settings.min_score - 3),
-        similarity=settings.dedup_similarity,
-        limit=settings.shortlist_limit,
-    )
-    if not shortlist:
-        return []
-
-    if settings.fetch_fulltext:
-        await sources.enrich_with_fulltext(
-            shortlist, settings.user_agent, settings.http_timeout, settings.fulltext_max_chars
-        )
-
-    # KEV / EPSS enrichment, then re-scoring on the full data.
-    await enricher.enrich(shortlist)
-    for article in shortlist:
-        article.score, article.reasons = filters.score_article(
-            article, feedback=learned if settings.enable_feedback else None
-        )
-
-    retained = [a for a in shortlist if a.score >= settings.min_score]
-
-    # A candidate already in the queue has its score refreshed: a CVE can
-    # enter KEV between two cycles.
-    added = 0
-    for article in retained:
-        if queue.add(article, state_mod.url_hash(article.url)):
-            added += 1
-    queue.purge(settings.candidate_ttl_hours)
-
-    report["queued"] = added
-    report["queue_size"] = len(queue)
-    log.info(
-        "Collection: %d articles -> %d queued (%d new, queue = %d)",
-        len(articles), len(retained), added, len(queue),
-    )
-    return retained
-
-
-async def publish_selection(
-    channel: discord.abc.Messageable,
-    selection: list,
-    report: dict,
-    urgent_reasons: dict[str, str] | None = None,
-    candidates: int | None = None,
-) -> int:
-    """
-    Summarizes then publishes an already-arbitrated selection, and removes
-    the actually-published articles from the queue.
-    """
-    if not selection:
-        return 0
-
-    log.info("Summarizing %d article(s) via %s...", len(selection), settings.ai_provider)
-    summarized, deferred = await summarizer.summarize_many(selection)
-    report["deferred"] = report.get("deferred", 0) + len(deferred)
-
-    posted = await publisher.publish(
-        channel,
-        summarized,
-        settings.ai_provider,
-        deferred=len(deferred),
-        urgent_reasons=urgent_reasons,
-        mention=settings.urgent_mention if urgent_reasons else "none",
-        quota=None if urgent_reasons else settings.daily_quota,
-        candidates=candidates,
-    )
-
-    # Only articles that actually went out are recorded and removed from
-    # the queue. A failed send stays a candidate for the next arbitration.
-    for article, summary in posted:
-        state.mark_published(
-            article.url, article.title, article.source, summary.severity, cves=article.cves
-        )
-    queue.remove([state_mod.url_hash(a.url) for a, _ in posted])
-
-    report["posted"] = report.get("posted", 0) + len(posted)
-    return len(posted)
-
-
-async def run_cycle(channel: discord.abc.Messageable, force_digest: bool = False) -> dict:
-    """
-    A full cycle.
-
-    Always collects; only publishes in two cases: a confirmed urgent alert,
-    or daily digest time. This split is what makes it possible to hold to
-    2-4 articles a day while still watching feeds every hour.
-    """
-    async with cycle_lock:
-        state.note_cycle_started()
-        report = {
-            "fetched": 0, "queued": 0, "queue_size": 0,
-            "urgent": 0, "digest": 0, "posted": 0, "deferred": 0,
-            "kev_escalations": 0, "error": None,
-        }
-        try:
-            # Learned weights refreshed BEFORE collection: scoring new
-            # articles must reflect the most recent votes.
-            await refresh_feedback(channel)
-
-            await collect(report)
-
-            # --- Path 0: KEV retrospective escalation ---
-            # A CVE can enter the KEV catalog days or weeks after its
-            # article was already published as a routine Medium/High.
-            # collect() just refreshed the catalog via enrichment, so this
-            # runs against current data, not a stale cache.
-            if settings.enable_kev_retro_check:
-                tracked = state.tracked_cves()
-                newly_kev = enricher.in_kev(tracked) if tracked else []
-                pending = state.pending_kev_escalations(newly_kev)
-                slots = budget.kev_escalation_slots_left(settings.kev_retro_max_per_day)
-                if pending and slots > 0:
-                    batch = pending[:slots]
-                    ransomware_cves = {
-                        e["cve"] for e in batch if enricher.kev_ransomware([e["cve"]])
-                    }
-                    sent = await publisher.publish_kev_escalations(
-                        channel, batch, ransomware_cves=ransomware_cves,
-                        mention=settings.urgent_mention,
-                    )
-                    for cve in sent:
-                        state.record_kev_escalation(cve)
-                    budget.note_kev_escalation(len(sent))
-                    report["kev_escalations"] = len(sent)
-                    if sent:
-                        log.warning("KEV retrospective escalation: %s", ", ".join(sent))
-
-            # --- Path 1: urgent alerts, published immediately and outside the quota ---
-            if settings.enable_urgent:
-                slots = budget.urgent_slots_left(settings.urgent_daily_max)
-                urgent, reasons = [], {}
-                if slots > 0:
-                    for key, article in queue.ranked():
-                        flagged, reason = selection.is_urgent(article, settings)
-                        if flagged:
-                            urgent.append(article)
-                            reasons[key] = reason
-                        if len(urgent) >= slots:
-                            break
-                if urgent:
-                    log.warning("Urgent publication of %d article(s)", len(urgent))
-                    sent = await publish_selection(channel, urgent, report, reasons)
-                    budget.note_urgent(sent)
-                    report["urgent"] = sent
-
-            # --- Path 2: daily digest ---
-            if force_digest or budget.digest_due():
-                # Relative selection: the top N of the day, not whatever
-                # clears a fixed bar (impossible to calibrate).
-                ranked = [article for _, article in queue.ranked()]
-
-                # Low floor: it only screens out obviously off-topic articles.
-                relevant = [
-                    a for a in ranked if a.score >= settings.digest_floor_score
-                ]
-                chosen = relevant[: settings.daily_quota]
-
-                # Anti-silence: a quiet day means a short watch, not no
-                # watch. The cap always wins (min() against an inconsistent setting).
-                target = min(settings.digest_min_articles, settings.daily_quota)
-                if len(chosen) < target and ranked:
-                    remainder = [a for a in ranked if a not in chosen]
-                    missing = target - len(chosen)
-                    chosen += remainder[:missing]
-                    if remainder[:missing]:
-                        log.info(
-                            "Quiet day: %d article(s) added below the floor "
-                            "to keep up the pace",
-                            len(remainder[:missing]),
-                        )
-
-                if chosen:
-                    log.info(
-                        "Daily digest: %d article(s) selected out of %d queued "
-                        "(scores: %s)",
-                        len(chosen), len(queue), [a.score for a in chosen],
-                    )
-                    report["digest"] = await publish_selection(
-                        channel, chosen, report, candidates=len(ranked)
-                    )
-                else:
-                    # The only remaining possible case of silence: an empty queue.
-                    log.info("Daily digest: queue is empty, nothing to publish.")
-                budget.note_digest()
-
-            report["queue_size"] = len(queue)
-            state.log_run(**report)
-            return report
-
-        except Exception as exc:
-            log.exception("Cycle failed")
-            report["error"] = f"{type(exc).__name__}: {exc}"
-            state.log_run(**report)
-            return report
 
 
 async def resolve_channel():
@@ -335,7 +67,7 @@ async def scheduled_watch():
     if channel is None:
         state.log_run(error="Discord channel unavailable")
         return
-    await run_cycle(channel)
+    await pipeline.run_cycle(channel)
 
 
 @scheduled_watch.before_loop
@@ -398,7 +130,7 @@ async def cyber_now(interaction: discord.Interaction):
 
     # A cycle far exceeds the 3s allowed to respond.
     await interaction.response.defer(thinking=True)
-    report = await run_cycle(interaction.channel)
+    report = await pipeline.run_cycle(interaction.channel)
 
     if report["error"]:
         message = f"❌ Error: `{report['error'][:300]}`"
@@ -438,7 +170,7 @@ async def cyber_digest(interaction: discord.Interaction):
         await interaction.response.send_message("⏳ A cycle is already running.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
-    report = await run_cycle(interaction.channel, force_digest=True)
+    report = await pipeline.run_cycle(interaction.channel, force_digest=True)
 
     if report["error"]:
         await interaction.followup.send(f"❌ Error: `{report['error'][:300]}`")
@@ -612,7 +344,8 @@ async def cyber_feedback(interaction: discord.Interaction):
         return
 
     await interaction.response.defer(ephemeral=True, thinking=True)
-    await refresh_feedback(interaction.channel, force=True)
+    await pipeline.refresh_feedback(interaction.channel, force=True)
+    learned = pipeline.learned
 
     embed = discord.Embed(
         title="🎓 Weights learned from your votes",

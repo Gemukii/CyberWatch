@@ -1,0 +1,216 @@
+import asyncio
+import time
+
+import pytest
+
+import publisher
+import sources
+from pipeline import Pipeline
+from selection import distinct_stories
+from sources import Article, FeedResult
+from state import url_hash
+from summarizer import Summary
+
+from helpers import FakeChannel, make_settings, message
+
+CVE = "CVE-2026-1111"
+
+
+def article(title="Vendor patches flaw in product", url="https://example.com/a", score=20):
+    return Article(
+        title=title,
+        url=url,
+        source="Test",
+        source_weight=10,
+        summary="A long enough description of the vulnerability. " * 8,
+        published_ts=time.time(),
+        score=score,
+    )
+
+
+@pytest.fixture
+def no_feeds(monkeypatch):
+    """A quiet cycle: the feeds answer, but carry nothing new."""
+    async def fetch(*args, **kwargs):
+        return [], [FeedResult(name="feed", articles=[])]
+
+    monkeypatch.setattr(sources, "fetch_all_feeds", fetch)
+
+
+def serving(monkeypatch, articles):
+    async def fetch(*args, **kwargs):
+        return list(articles), [FeedResult(name="feed", articles=list(articles))]
+
+    monkeypatch.setattr(sources, "fetch_all_feeds", fetch)
+
+
+def primed(channel, settings=None) -> Pipeline:
+    pipe = Pipeline(settings or make_settings())
+    asyncio.run(pipe.state.prime_from_channel(channel, budget=pipe.budget))
+    return pipe
+
+
+def load_kev(pipe, *cves):
+    """Stands in for the catalog download."""
+    async def ensure():
+        pipe.enricher._kev = {cve: False for cve in cves}
+
+    pipe.enricher.ensure_kev = ensure
+
+
+def test_kev_escalation_is_not_sent_again_by_the_next_run(no_feeds):
+    """Each run starts from Discord history alone."""
+    published = publisher.build_embed(
+        Article(title="t", url="https://example.com/a", source="s", cves=[CVE]),
+        Summary(title="t", bullets=["b"], severity="High", cves=[CVE]),
+    )
+    channel = FakeChannel([message(published)])
+
+    first = primed(channel)
+    load_kev(first, CVE)
+    report = asyncio.run(first.run_cycle(channel))
+    assert report["kev_escalations"] == 1
+
+    second = primed(channel)
+    load_kev(second, CVE)
+    report = asyncio.run(second.run_cycle(channel))
+    assert report["kev_escalations"] == 0
+
+
+def test_kev_daily_cap_holds_across_runs(no_feeds):
+    settings = make_settings(kev_retro_max_per_day=1)
+    cves = ["CVE-2026-0001", "CVE-2026-0002"]
+    published = publisher.build_embed(
+        Article(title="t", url="https://example.com/a", source="s", cves=cves),
+        Summary(title="t", bullets=["b"], severity="High", cves=cves),
+    )
+    channel = FakeChannel([message(published)])
+
+    first = primed(channel, settings)
+    load_kev(first, *cves)
+    assert asyncio.run(first.run_cycle(channel))["kev_escalations"] == 1
+
+    second = primed(channel, settings)
+    load_kev(second, *cves)
+    assert asyncio.run(second.run_cycle(channel))["kev_escalations"] == 0
+
+
+def test_kev_catalog_is_loaded_on_a_quiet_cycle(no_feeds):
+    channel = FakeChannel()
+    pipe = primed(channel)
+    pipe.state.mark_published("https://example.com/a", "t", cves=[CVE])
+    calls = []
+
+    async def ensure():
+        calls.append(True)
+
+    pipe.enricher.ensure_kev = ensure
+    asyncio.run(pipe.run_cycle(channel))
+
+    assert calls
+
+
+def test_failed_digest_stays_due(monkeypatch):
+    serving(monkeypatch, [article()])
+    settings = make_settings(digest_hour=0)
+    pipe = primed(FakeChannel(), settings)
+    channel = FakeChannel(fail_send=True)
+
+    report = asyncio.run(pipe.run_cycle(channel))
+
+    assert report["digest"] == 0
+    assert pipe.budget.digest_due()
+
+
+def test_empty_digest_is_not_retried_later_the_same_day(no_feeds):
+    settings = make_settings(digest_hour=0)
+    channel = FakeChannel()
+    pipe = primed(channel, settings)
+
+    asyncio.run(pipe.run_cycle(channel))
+
+    assert not pipe.budget.digest_due()
+
+
+def test_published_article_leaves_the_queue(monkeypatch):
+    item = article()
+    serving(monkeypatch, [item])
+    settings = make_settings(digest_hour=0)
+    channel = FakeChannel()
+    pipe = primed(channel, settings)
+
+    report = asyncio.run(pipe.run_cycle(channel))
+
+    assert report["digest"] == 1
+    assert pipe.state.is_known(item.url)
+    assert url_hash(item.url) not in dict(pipe.queue.ranked())
+
+
+def kev_article(url, score=30, cve=CVE):
+    item = article(title=f"Story at {url}", url=url, score=score)
+    item.cves = [cve]
+    item.kev_cves = [cve]
+    return item
+
+
+def queued(pipe, *articles):
+    for item in articles:
+        pipe.queue.add(item, url_hash(item.url))
+
+
+def test_one_cve_covered_by_two_outlets_is_one_alert(no_feeds):
+    channel = FakeChannel()
+    pipe = primed(channel, make_settings(digest_hour=23))
+    queued(pipe, kev_article("https://a.example/1", 40), kev_article("https://b.example/2", 20))
+    load_kev(pipe, CVE)
+
+    report = asyncio.run(pipe.run_cycle(channel))
+
+    assert report["urgent"] == 1
+    assert [e.url for e in channel.sent if e.url] == ["https://a.example/1"]
+
+
+def test_second_outlet_is_not_alerted_on_the_next_run(no_feeds):
+    settings = make_settings(digest_hour=23)
+    channel = FakeChannel()
+    first = primed(channel, settings)
+    queued(first, kev_article("https://a.example/1"))
+    load_kev(first, CVE)
+    asyncio.run(first.run_cycle(channel))
+
+    second = primed(channel, settings)
+    queued(second, kev_article("https://b.example/2"))
+    load_kev(second, CVE)
+    report = asyncio.run(second.run_cycle(channel))
+
+    assert report["urgent"] == 0
+
+
+def test_cve_published_as_kev_is_never_escalated(no_feeds):
+    """It was reported as exploited from the start."""
+    settings = make_settings(digest_hour=23)
+    channel = FakeChannel()
+    same_run = primed(channel, settings)
+    queued(same_run, kev_article("https://a.example/1"))
+    load_kev(same_run, CVE)
+    asyncio.run(same_run.run_cycle(channel))
+    assert same_run.state.pending_kev_escalations([CVE]) == []
+
+    next_run = primed(channel, settings)
+    load_kev(next_run, CVE)
+    report = asyncio.run(next_run.run_cycle(channel))
+
+    assert report["kev_escalations"] == 0
+
+
+def test_articles_without_cve_are_never_merged():
+    first, second = article(url="https://a.example/1"), article(url="https://b.example/2")
+
+    assert distinct_stories([first, second], ["CVE-2026-0001"]) == [first, second]
+
+
+def test_article_with_a_new_cve_stays():
+    item = article()
+    item.cves = [CVE, "CVE-2026-2222"]
+
+    assert distinct_stories([item], [CVE]) == [item]

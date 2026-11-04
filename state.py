@@ -2,7 +2,7 @@
 In-memory anti-duplicate index, primed from Discord history.
 
 No disk writes: Discord acts as persistent storage.
-See docs/ARCHITECTURE.md §3.
+See docs/ARCHITECTURE.md.
 """
 
 from __future__ import annotations
@@ -24,6 +24,8 @@ URGENT_MARKER = "#urgent"
 KEV_ESCALATION_MARKER = "#kev-escalation"
 
 CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
+# publisher.build_embed() flags a KEV-listed CVE with ⚠️ right after it.
+KEV_FLAGGED_RE = re.compile(r"(CVE-\d{4}-\d{4,7})`?⚠️", re.IGNORECASE)
 
 TRACKING_PARAMS = {
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
@@ -158,6 +160,17 @@ class State:
                     ts = message.created_at.timestamp()
                     footer_text = embed.footer.text if embed.footer and embed.footer.text else ""
 
+                    # An escalation alert has no embed URL (the link to the
+                    # original article sits in its description), so this has
+                    # to run before the linkless branch below. Its footer is
+                    # what stops the same CVE from being escalated twice.
+                    if KEV_ESCALATION_MARKER in footer_text:
+                        for cve in CVE_RE.findall(footer_text):
+                            self._kev_escalated.add(cve.upper())
+                        if budget is not None:
+                            budget.note_kev_escalation_from_timestamp(ts)
+                        continue
+
                     if not embed.url:
                         # Linkless header: this is what marks an
                         # already-sent digest (see publisher.DIGEST_MARKER).
@@ -167,13 +180,6 @@ class State:
 
                     if budget is not None and URGENT_MARKER in footer_text:
                         budget.note_urgent_from_timestamp(ts)
-
-                    # An escalation alert links back to the original article,
-                    # so it still carries a URL — but its footer marks it as
-                    # already-sent, so it isn't fired again for the same CVE.
-                    if KEV_ESCALATION_MARKER in footer_text:
-                        for cve in CVE_RE.findall(footer_text):
-                            self._kev_escalated.add(cve.upper())
 
                     if ts >= time.time() - self.retention_seconds:
                         self._seen[url_hash(embed.url)] = ts
@@ -197,6 +203,8 @@ class State:
                                     "ts": ts,
                                 },
                             )
+                        for cve in KEV_FLAGGED_RE.findall(field.value or ""):
+                            self._kev_escalated.add(cve.upper())
         except Exception as exc:
             # Non-blocking failure: worst case, a few articles get
             # re-published once.
@@ -254,7 +262,13 @@ class State:
         return [title for title, ts in self._titles if ts >= cutoff]
 
     def mark_published(
-        self, url: str, title: str, source: str = "", severity: str = "", cves: list[str] | None = None
+        self,
+        url: str,
+        title: str,
+        source: str = "",
+        severity: str = "",
+        cves: list[str] | None = None,
+        kev_cves: list[str] | None = None,
     ) -> None:
         now = time.time()
         self._seen[url_hash(url)] = now
@@ -262,6 +276,9 @@ class State:
         for cve in cves or []:
             cve = cve.upper()
             self._published_cves.setdefault(cve, {"url": url, "title": title, "ts": now})
+        # Already reported as exploited: a later "now confirmed" would be false.
+        for cve in kev_cves or []:
+            self._kev_escalated.add(cve.upper())
 
     # --- KEV retrospective escalation ---
     def pending_kev_escalations(self, kev_cves: list[str]) -> list[dict]:

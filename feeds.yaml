@@ -42,22 +42,39 @@ feeds:
     priority: high
     enabled: true
 
+  # Last entry dates from July 2025.
   certeu_guidance:
     url: https://cert.europa.eu/publications/security-guidance-rss
     weight: 6
     source_type: technical
     priority: normal
-    enabled: true
+    enabled: false
 
   # ---------------------------------------------------------------------------
   # 🛡️ Vulnerability / Threat Intelligence
   # ---------------------------------------------------------------------------
 
+  # Answers 403 to the bot's client. Confirmed exploitation still comes from
+  # the KEV catalog, see enrichment.py.
   cisa_advisories:
     url: https://www.cisa.gov/cybersecurity-advisories/all.xml
     weight: 8
     source_type: official
     priority: high
+    enabled: false
+
+  talos_intelligence:
+    url: https://blog.talosintelligence.com/rss/
+    weight: 7
+    source_type: threat_intel
+    priority: normal
+    enabled: true
+
+  rapid7:
+    url: https://www.rapid7.com/blog/rss/
+    weight: 6
+    source_type: research
+    priority: normal
     enabled: true
 
   # ---------------------------------------------------------------------------
@@ -65,8 +82,42 @@ feeds:
   # ---------------------------------------------------------------------------
 
   google_project_zero:
-    url: https://googleprojectzero.blogspot.com/feeds/posts/default
+    url: https://projectzero.google/feed.xml
     weight: 7
     source_type: research
     priority: high
+    enabled: true
+
+  # ---------------------------------------------------------------------------
+  # 📰 News: first to report, several items a day
+  # ---------------------------------------------------------------------------
+  # No source_type bonus on purpose: a routine story stays below official
+  # advisories, and keywords (zero-day, actively exploited...) lift the rest.
+
+  bleepingcomputer:
+    url: https://www.bleepingcomputer.com/feed/
+    weight: 7
+    source_type: general
+    priority: normal
+    enabled: true
+
+  the_record:
+    url: https://therecord.media/feed
+    weight: 7
+    source_type: general
+    priority: normal
+    enabled: true
+
+  the_hacker_news:
+    url: https://feeds.feedburner.com/TheHackersNews
+    weight: 6
+    source_type: general
+    priority: normal
+    enabled: true
+
+  securityweek:
+    url: https://www.securityweek.com/feed/
+    weight: 6
+    source_type: general
+    priority: normal
     enabled: true

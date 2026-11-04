@@ -163,7 +163,7 @@ class Settings:
     # A CVE can take days or weeks to reach the KEV catalog after its
     # article was already published as a routine Medium/High. This
     # re-checks previously published CVEs on every cycle and escalates
-    # the ones that later get listed — see docs/ARCHITECTURE.md §1.
+    # the ones that later get listed — see docs/ARCHITECTURE.md.
     enable_kev_retro_check: bool = _env_bool("ENABLE_KEV_RETRO_CHECK", True)
     # Longer than RETENTION_DAYS on purpose: KEV listings lag disclosure.
     kev_retro_days: int = _env_int("KEV_RETRO_DAYS", 14)
