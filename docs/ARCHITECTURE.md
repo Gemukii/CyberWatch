@@ -207,4 +207,6 @@ Automated tests are defined in:
 .github/workflows/tests.yml
 ```
 
+The reasons behind this design are in [ADR-002](adr/002-project-architecture.md).
+
 The architecture intentionally keeps each processing step isolated so that individual parts can be tested and modified without having to change the entire pipeline.

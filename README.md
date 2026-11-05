@@ -49,7 +49,7 @@ Three decisions shape the project:
 * **It fails closed.** If the history can't be read, the run publishes nothing rather than posting everything again.
 * **The model has no power.** It only returns text, and that text is validated before it reaches Discord.
 
-Read more in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [ADR-001](docs/adr/001-serverless-hosting.md).
+Read more in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [ADR-001](docs/adr/001-serverless-hosting.md) and [ADR-002](docs/adr/002-project-architecture.md).
 
 ## Quick start
 
@@ -176,6 +176,7 @@ See the source code for the currently available commands.
 | [`Architecture`](docs/ARCHITECTURE.md) | Components, responsibilities and execution flows |
 | [`Security`](docs/SECURITY.md)         | Threat model, controls and known limits          |
 | [`ADR-001`](docs/adr/001-serverless-hosting.md) | Why it runs without a server            |
+| [`ADR-002`](docs/adr/002-project-architecture.md) | Why the project is built the way it is  |
 
 ## Tests
 
