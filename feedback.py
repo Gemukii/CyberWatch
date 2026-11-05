@@ -26,7 +26,7 @@ SIGNAL_PREFIX = "sig:"
 SIGNAL_RE = re.compile(r"sig:([a-z0-9\-,]+)", re.IGNORECASE)
 
 # These signals describe facts, not taste: they're never learned from.
-FACTUAL_SIGNALS = frozenset({"kev", "epss", "cve", "cvss"})
+FACTUAL_SIGNALS = frozenset({"kev", "epss", "cve", "cvss", "watchlist"})
 
 
 def encode_signals(signals: list[str]) -> str:

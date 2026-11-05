@@ -217,7 +217,14 @@ def is_urgent(article, settings) -> tuple[bool, str]:
     if epss is not None and epss >= settings.urgent_epss_threshold:
         return True, f"EPSS {epss:.0%} — exploitation highly likely within 30 days"
 
-    # 3. Safety net: exceptional score, well above the usual threshold.
+    # 3. Exploitation reported on a product you run. Press wording alone
+    #    isn't enough elsewhere, but here it can't wait for a catalog.
+    watched = getattr(article, "watch_matches", None)
+    signals = getattr(article, "signals", None) or []
+    if watched and ("actively-exploited" in signals or "zero-day" in signals):
+        return True, f"{watched[0]} is on your watchlist — exploitation reported"
+
+    # 4. Safety net: exceptional score, well above the usual threshold.
     #    Covers CVE-less stories (major compromise, supply-chain incident)
     #    that no catalog would otherwise catch.
     if getattr(article, "score", 0) >= settings.urgent_score_threshold:

@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 from aiohttp import web
 
 import sources
@@ -77,3 +78,23 @@ def test_stalled_server_times_out_instead_of_hanging():
 
     assert articles == []
     assert "Timeout" in results[0].error
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "http://localhost:8080/admin",
+        "http://127.0.0.1/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.5/",
+        "http://[::1]/",
+    ],
+)
+def test_feed_links_cannot_reach_internal_addresses(url):
+    assert not sources.is_public_http_url(url)
+
+
+def test_ordinary_article_links_are_accepted():
+    assert sources.is_public_http_url("https://www.bleepingcomputer.com/news/a/")

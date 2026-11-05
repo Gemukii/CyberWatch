@@ -98,6 +98,10 @@ def build_embed(
     if article.epss_max is not None and article.epss_max >= 0.01:
         embed.add_field(name="EPSS 30d", value=f"{article.epss_max:.1%}", inline=True)
 
+    if article.watch_matches:
+        watched = " · ".join(f"`{term}`" for term in article.watch_matches[:5])
+        embed.add_field(name="🎯 Watchlist", value=_truncate(watched, FIELD_LIMIT), inline=False)
+
     if summary.cves:
         marked = [f"`{c}`" + ("⚠️" if c in article.kev_cves else "") for c in summary.cves]
         embed.add_field(name="CVE", value=_truncate(" · ".join(marked), FIELD_LIMIT), inline=False)

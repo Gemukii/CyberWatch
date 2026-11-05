@@ -131,6 +131,16 @@ This means a failed Discord publication does not permanently mark the article as
 
 A one-shot run starts with nothing in memory, so `run_once.py` rebuilds this state from Discord history before each cycle. If that history can't be read, the run stops without publishing: an empty index would publish everything again.
 
+## Watchlist
+
+`WATCHLIST` lists the products you run. A match adds to the score, once however many terms match, and shows in the embed. Reported exploitation of a listed product becomes an urgent alert, still bounded by `URGENT_DAILY_MAX`.
+
+The `watchlist` signal is factual, so votes never adjust it.
+
+## Security
+
+Article text is treated as hostile from collection to publication. See [SECURITY.md](SECURITY.md).
+
 ## Feedback
 
 User feedback is handled after publication.

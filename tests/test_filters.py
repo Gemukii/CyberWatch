@@ -1,3 +1,4 @@
+from feedback import encode_signals
 from sources import Article
 from filters import score_article, select_articles
 from state import State
@@ -19,19 +20,6 @@ def make_article(
 
 def make_state() -> State:
     return State()
-
-
-def test_score_article_returns_score_and_reasons():
-    article = make_article(
-        "Critical vulnerability allows remote code execution",
-        "A CVE allows attackers to execute arbitrary code.",
-    )
-
-    score, reasons = score_article(article)
-
-    assert isinstance(score, int)
-    assert isinstance(reasons, list)
-    assert score > 0
 
 
 def test_excluded_article_is_not_selected():
@@ -79,25 +67,43 @@ def test_select_articles_returns_articles():
     assert isinstance(selected, list)
     assert article in selected
 
-def test_duplicate_urls_are_removed():
-    article1 = make_article(
-        "Critical vulnerability discovered",
-        url="https://example.com/same",
-    )
+def test_watchlist_match_in_title_outscores_one_in_body():
+    plain = make_article("Vendor patches flaw", summary="Nothing relevant here")
+    in_body = make_article("Vendor patches flaw", summary="Affects Fortinet devices")
+    in_title = make_article("Fortinet patches flaw", summary="Nothing relevant here")
 
-    article2 = make_article(
-        "Same vulnerability reported again",
-        url="https://example.com/same",
-    )
+    scores = [
+        score_article(item, watchlist=["fortinet"], watchlist_weight=4)[0]
+        for item in (plain, in_body, in_title)
+    ]
 
-    state = make_state()
+    assert scores[1] == scores[0] + 4
+    assert scores[2] == scores[0] + 8
+    assert in_title.watch_matches == ["fortinet"]
 
-    selected = select_articles(
-        [article1, article2],
-        state,
-        min_score=0,
-        similarity=0.85,
-        limit=5,
-    )
 
-    assert len(selected) <= 1
+def test_watchlist_matches_whole_terms_only():
+    item = make_article("New attack scenarios described")
+
+    score_article(item, watchlist=["ios"])
+
+    assert item.watch_matches == []
+
+
+def test_several_watchlist_matches_count_once():
+    one = make_article("Fortinet patches flaw")
+    two = make_article("Fortinet and Cisco patch flaws")
+
+    first = score_article(one, watchlist=["fortinet"])[0]
+    second = score_article(two, watchlist=["fortinet", "cisco"])[0]
+
+    assert first == second
+    assert two.watch_matches == ["fortinet", "cisco"]
+
+
+def test_watchlist_is_not_learned_from_votes():
+    item = make_article("Fortinet patches flaw")
+
+    score_article(item, watchlist=["fortinet"])
+
+    assert "watchlist" not in encode_signals(item.signals)

@@ -48,6 +48,7 @@ class Pipeline:
             max_adjustment=settings.feedback_max_adjustment,
         )
         self._feedback_refreshed_at = 0.0
+        self.failed_feeds: list[str] = []
         # Prevents two simultaneous cycles (auto loop + manual command).
         self.cycle_lock = asyncio.Lock()
 
@@ -83,6 +84,7 @@ class Pipeline:
             s.feeds, s.max_age_hours, s.user_agent, s.http_timeout
         )
         self.state.record_feed_results(feed_results)
+        self.failed_feeds = [r.name for r in feed_results if r.error]
         report["fetched"] = len(articles)
 
         unhealthy = self.state.unhealthy_feeds(s.feed_failure_threshold)
@@ -100,6 +102,8 @@ class Pipeline:
             min_score=max(1, s.min_score - 3),
             similarity=s.dedup_similarity,
             limit=s.shortlist_limit,
+            watchlist=s.watchlist,
+            watchlist_weight=s.watchlist_weight,
         )
         if not shortlist:
             return []
@@ -113,7 +117,10 @@ class Pipeline:
         await self.enricher.enrich(shortlist)
         for article in shortlist:
             article.score, article.reasons = filters.score_article(
-                article, feedback=self.learned if s.enable_feedback else None
+                article,
+                feedback=self.learned if s.enable_feedback else None,
+                watchlist=s.watchlist,
+                watchlist_weight=s.watchlist_weight,
             )
 
         retained = [a for a in shortlist if a.score >= s.min_score]

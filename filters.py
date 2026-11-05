@@ -113,10 +113,6 @@ PRIORITY_BONUS: dict[str, int] = {
 }
 
 
-# Factual signals, not subject to feedback: they describe technical reality
-# (a CVE is in KEV or it isn't), not a reading preference.
-FACTUAL_SIGNALS = frozenset({"kev", "epss", "cve", "cvss"})
-
 KEYWORD_RE = [
     (name, re.compile(pattern, re.IGNORECASE), weight)
     for name, (pattern, weight) in KEYWORD_SIGNALS.items()
@@ -135,7 +131,21 @@ def is_excluded(article: Article) -> str | None:
     return None
 
 
-def score_article(article: Article, feedback=None) -> tuple[int, list[str]]:
+def find_watchlist_matches(text: str, watchlist: list[str]) -> list[str]:
+    """Whole-term matches only: "ios" must not match "scenarios"."""
+    return [
+        term
+        for term in watchlist
+        if re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", text, re.IGNORECASE)
+    ]
+
+
+def score_article(
+    article: Article,
+    feedback=None,
+    watchlist: list[str] | None = None,
+    watchlist_weight: int = 4,
+) -> tuple[int, list[str]]:
     """
     Computes a relevance score and the list of detected signals.
 
@@ -148,6 +158,9 @@ def score_article(article: Article, feedback=None) -> tuple[int, list[str]]:
     `feedback` (optional) is a LearnedWeights derived from 👍/👎 votes: it
     adjusts lexical signals based on your feedback, never touching factual
     signals — see feedback.py.
+
+    `watchlist` holds the products you run. It counts once, however many terms
+    match, so a long list can't outweigh the factual signals.
     """
     title = article.title
     body = article.content[:6000]
@@ -180,6 +193,16 @@ def score_article(article: Article, feedback=None) -> tuple[int, list[str]]:
         if in_title or in_body:
             signals.append(name)
             reasons.append(name)
+
+    watchlist = watchlist or []
+    in_title = find_watchlist_matches(title, watchlist)
+    article.watch_matches = in_title + [
+        term for term in find_watchlist_matches(body, watchlist) if term not in in_title
+    ]
+    if article.watch_matches:
+        score += watchlist_weight * 2 if in_title else watchlist_weight
+        signals.append("watchlist")
+        reasons.append(f"watchlist ({', '.join(article.watch_matches[:3])})")
 
     # Explicit CVE identifier = concrete technical information.
     if article.cves:
@@ -268,6 +291,8 @@ def select_articles(
     min_score: int,
     similarity: float,
     limit: int,
+    watchlist: list[str] | None = None,
+    watchlist_weight: int = 4,
 ) -> list[Article]:
     """
     Runs the full filtering pipeline and returns the retained articles,
@@ -296,7 +321,9 @@ def select_articles(
         # V1.1 - classify locally before scoring
         categorize_article(article)
 
-        article.score, article.reasons = score_article(article)
+        article.score, article.reasons = score_article(
+            article, watchlist=watchlist, watchlist_weight=watchlist_weight
+        )
         if article.score < min_score:
             stats["low score"] += 1
             continue

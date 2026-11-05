@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import html
+import ipaddress
 import logging
 import time
 from calendar import timegm
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 import aiohttp
 import feedparser
@@ -48,6 +50,9 @@ class Article:
     kev_ransomware: bool = False
     epss_max: float | None = None
 
+    # Watchlist terms found in the article
+    watch_matches: list[str] = field(default_factory=list)
+
     # Classification
     category: str = "General Security"
     category_tags: list[str] = field(default_factory=list)
@@ -68,6 +73,28 @@ class FeedResult:
     name: str
     articles: list[Article] = field(default_factory=list)
     error: str | None = None
+
+
+def is_public_http_url(url: str) -> bool:
+    """
+    True for a web address the bot may fetch and publish.
+
+    Links come from feeds, and the bot downloads them: a hijacked feed must
+    not be able to point it at localhost or a private network.
+    """
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True  # a hostname, not an IP address
 
 
 def _strip_html(raw: str) -> str:
@@ -110,7 +137,7 @@ def _parse_feed(
     for entry in parsed.entries:
         link = (entry.get("link") or "").strip()
         title = _strip_html(entry.get("title") or "")
-        if not link or not title:
+        if not title or not is_public_http_url(link):
             continue
         raw_summary = entry.get("summary") or ""
         if not raw_summary and entry.get("content"):

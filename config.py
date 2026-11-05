@@ -38,6 +38,10 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "y", "on", "oui"}
 
 
+def _env_list(name: str) -> list[str]:
+    return [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
+
+
 @dataclass
 class Settings:
     # --- Discord ---
@@ -101,6 +105,11 @@ class Settings:
     # --- Filtering ---
     min_score: int = _env_int("MIN_SCORE", 5)
     dedup_similarity: float = _env_float("DEDUP_SIMILARITY", 0.72)
+    # Products and vendors you actually run, comma-separated. A match raises
+    # the score, and makes reported exploitation an urgent alert.
+    watchlist: list[str] = field(default_factory=lambda: _env_list("WATCHLIST"))
+    # Doubled when the term is in the title, like keyword signals.
+    watchlist_weight: int = _env_int("WATCHLIST_WEIGHT", 4)
 
     # --- Enrichment (free public sources, no key required) ---
     # CISA KEV: official catalog of exploited vulnerabilities.

@@ -34,7 +34,7 @@ Vercel can't host `bot.py`: a gateway client needs a permanent connection, and a
 - No server to maintain.
 - Slash commands are gone in this mode. A manual workflow run replaces `/cyber-now` and `/cyber-digest`.
 - The bot shows as offline in Discord.
-- Urgent alerts can arrive late, because GitHub delays scheduled runs under load.
+- GitHub delays and skips scheduled runs under load: the first day got 2 runs out of about 17, so urgent alerts can arrive hours late. An external scheduler calling the workflow API closes that gap, with a token limited to starting workflows. The README has the steps.
 - Each run starts from nothing, so state that Discord doesn't hold is lost between runs:
   - Consecutive feed failures aren't counted. A failing feed only shows as a warning in the run's log.
   - An empty digest isn't remembered, so the digest goes out on the first later run that has an article.

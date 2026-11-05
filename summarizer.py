@@ -117,7 +117,6 @@ USER_PROMPT = """Analyze the cybersecurity watch article below and produce a sum
 
 Verified metadata (trusted, provided by the system):
 - source: {source}
-- URL: {url}
 - CVEs detected in the text: {cves}
 - Present in the CISA KEV catalog (confirmed exploitation): {kev}
 - Maximum EPSS score (30-day exploitation probability): {epss}
@@ -153,15 +152,22 @@ Constraints:
 # --- 3. Output validation ---
 MENTION_RE = re.compile(r"@(everyone|here)|<@[!&]?\d+>", re.IGNORECASE)
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\((?:[^)]*)\)")
+# Discord turns bare URLs into links too. The embed title already links to the
+# article, so a summary has no reason to carry one.
+BARE_LINK_RE = re.compile(
+    r"<?\b(?:(?:https?|hxxps?)://|www\.|discord(?:app)?\.(?:gg|com/invite)/)\S+",
+    re.IGNORECASE,
+)
 
 
 def _neutralize(text: str) -> str:
     """
     Neutralizes anything that could be abused once published on Discord:
-    mass mentions and Markdown links injected into the summary.
+    mass mentions and links injected into the summary.
     """
     text = MENTION_RE.sub("[mention removed]", text)
     text = MARKDOWN_LINK_RE.sub(r"\1", text)   # keep the label, drop the URL
+    text = BARE_LINK_RE.sub("[link removed]", text)
     return " ".join(text.split())
 
 
@@ -209,6 +215,11 @@ def _extract_json(raw: str) -> dict:
     return parsed
 
 
+def _as_list(value) -> list:
+    """A string here would otherwise be read one character at a time."""
+    return value if isinstance(value, list) else []
+
+
 def validate_summary(
     data: dict, article: Article, provider: str, flags: list[str] | None = None
 ) -> Summary:
@@ -220,7 +231,7 @@ def validate_summary(
     this blocks both hallucinations and CVEs injected by a third party.
     """
     bullets: list[str] = []
-    for point in data.get("points") or []:
+    for point in _as_list(data.get("points")):
         clean = _neutralize(str(point).strip())
         if clean:
             bullets.append(clean[:250])
@@ -239,12 +250,12 @@ def validate_summary(
 
     # Only CVEs actually present in the source text are kept.
     allowed = {c.upper() for c in article.cves}
-    cves = [c for c in extract_cves(" ".join(map(str, data.get("cves") or []))) if c in allowed]
+    cves = [c for c in extract_cves(" ".join(map(str, _as_list(data.get("cves"))))) if c in allowed]
     if not cves:
         cves = article.cves[:6]
 
     tags = []
-    for tag in data.get("tags") or []:
+    for tag in _as_list(data.get("tags")):
         clean = re.sub(r"[^a-z0-9\-]", "", str(tag).lower())[:20]
         if clean:
             tags.append(clean)
@@ -278,18 +289,22 @@ def _clean_truncate(text: str, limit: int) -> str:
     return cut.rstrip(" ,.;:-–—") + "…"
 
 
-def heuristic_summary(article: Article, flags: list[str] | None = None) -> Summary:
+def heuristic_summary(article: Article) -> Summary:
     """
     Fallback summary: the article's first few sentences, trimmed.
     Weaker than an LLM, but it's the default mode when AI_PROVIDER=none.
+
+    This text goes straight from the web to Discord, so it gets the same
+    cleaning and flagging as the text sent to a model.
     """
-    text = article.content or article.title
+    text, flags = sanitize_content(article.content or article.title)
+    title, title_flags = sanitize_content(article.title)
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if len(s.strip()) > 40]
     bullets = [_clean_truncate(_neutralize(s), 250) for s in sentences[:3]] or [
-        _clean_truncate(article.title, 250)
+        _clean_truncate(_neutralize(title), 250)
     ]
 
-    lowered = f"{article.title} {text}".lower()
+    lowered = f"{title} {text}".lower()
     if article.kev_cves or any(
         k in lowered for k in ("actively exploited", "exploited in the wild", "zero-day", "0-day")
     ):
@@ -302,13 +317,13 @@ def heuristic_summary(article: Article, flags: list[str] | None = None) -> Summa
         severity = "Low"
 
     return Summary(
-        title=_clean_truncate(_neutralize(article.title), 250),
+        title=_clean_truncate(_neutralize(title), 250),
         bullets=bullets,
         severity=severity,
         cves=article.cves[:6],
         tags=[],
         generated_by="heuristic",
-        injection_flags=list(flags or []),
+        injection_flags=sorted(set(flags + title_flags)),
     )
 
 
@@ -372,7 +387,6 @@ class Summarizer:
         prompt = USER_PROMPT.format(
             nonce=nonce,
             source=article.source,
-            url=article.url,
             cves=", ".join(article.cves) or "none",
             kev=", ".join(article.kev_cves) or "none",
             epss=f"{article.epss_max:.1%}" if article.epss_max is not None else "unknown",

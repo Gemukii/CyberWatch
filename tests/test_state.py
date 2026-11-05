@@ -15,6 +15,7 @@ def article(url="https://example.com/article", cves=None):
 
 def test_published_article_is_known():
     state = State(retention_days=7)
+    assert not state.is_known("https://example.com/article")
 
     state.mark_published(
         "https://example.com/article",
@@ -22,12 +23,6 @@ def test_published_article_is_known():
     )
 
     assert state.is_known("https://example.com/article")
-
-
-def test_unknown_article_is_not_known():
-    state = State(retention_days=7)
-
-    assert not state.is_known("https://example.com/article")
 
 
 def test_cve_is_tracked_after_publication():

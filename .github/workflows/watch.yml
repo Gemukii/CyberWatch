@@ -28,16 +28,6 @@ jobs:
   watch:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-      DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      AI_PROVIDER: ${{ vars.AI_PROVIDER || 'gemini' }}
-      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-flash-lite-latest' }}
-      # This model rejects thinkingBudget: 0.
-      GEMINI_DISABLE_THINKING: "false"
-      TIMEZONE: Europe/Paris
-      TZ: Europe/Paris
     steps:
       - uses: actions/checkout@v4
 
@@ -49,8 +39,22 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # Secrets live on this step alone: `pip install` above runs third-party
+      # code and has no need for them.
       - name: Run one cycle
         env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # A secret, not a variable: this repository is public, and the list
+          # says what you run.
+          WATCHLIST: ${{ secrets.WATCHLIST }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER || 'gemini' }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-flash-lite-latest' }}
+          # This model rejects thinkingBudget: 0.
+          GEMINI_DISABLE_THINKING: "false"
+          TIMEZONE: Europe/Paris
+          TZ: Europe/Paris
           DRY_RUN: ${{ inputs.dry_run }}
           FORCE_DIGEST: ${{ inputs.force_digest }}
         run: |

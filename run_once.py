@@ -7,10 +7,12 @@ Publishing, history reads and reactions all work this way; slash commands
 don't, they need bot.py.
 
     python run_once.py
-    python run_once.py --dry-run            # never writes to Discord
+    python run_once.py --dry-run            # reads Discord, never writes
+    python run_once.py --offline            # no Discord at all, for local tests
     python run_once.py --force-digest
 
-Exit code 1 means the cycle failed, so the scheduler reports it.
+Exit code 1 means the cycle failed, 2 that the configuration is invalid: the
+scheduler reports both.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 
 import discord
@@ -79,11 +82,36 @@ async def run_with_channel(pipeline: Pipeline, channel, force_digest: bool) -> d
     return await pipeline.run_cycle(channel, force_digest=force_digest)
 
 
-async def run(dry_run: bool, force_digest: bool) -> int:
+def write_run_summary(report: dict, failed_feeds: list[str], mode: str) -> None:
+    """
+    Shows what the run did on its GitHub page.
+
+    A green run only says nothing crashed. Without this, a run that published
+    nothing looks exactly like one that published the digest.
+    """
+    path = os.getenv("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    rows = [
+        ("Mode", mode),
+        ("Articles fetched", report["fetched"]),
+        ("New candidates", report["queued"]),
+        ("Published", report["posted"]),
+        ("Urgent alerts", report["urgent"]),
+        ("KEV escalations", report["kev_escalations"]),
+        ("Deferred (AI unavailable)", report["deferred"]),
+        ("Failed feeds", ", ".join(failed_feeds) or "none"),
+    ]
+    lines = ["| | |", "|---|---|", *(f"| {name} | {value} |" for name, value in rows)]
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+async def run(dry_run: bool, force_digest: bool, offline: bool = False) -> int:
     pipeline = Pipeline(settings)
 
     try:
-        if dry_run and not settings.discord_token:
+        if offline:
             report = await run_with_channel(pipeline, DryRunChannel(), force_digest)
         else:
             # Intents only matter to the gateway, which is never opened.
@@ -101,17 +129,23 @@ async def run(dry_run: bool, force_digest: bool) -> int:
     if report["error"]:
         log.error("Cycle failed: %s", report["error"])
         return 1
+
+    mode = "offline" if offline else "dry run" if dry_run else "live"
+    write_run_summary(report, pipeline.failed_feeds, mode)
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Runs one CyberWatch cycle.")
-    parser.add_argument("--dry-run", action="store_true", help="never write to Discord")
+    parser.add_argument("--dry-run", action="store_true", help="read Discord, never write")
+    parser.add_argument("--offline", action="store_true", help="skip Discord entirely")
     parser.add_argument("--force-digest", action="store_true", help="send the digest now")
     args = parser.parse_args()
 
     problems = settings.validate()
-    if args.dry_run:
+    # Only --offline may run without Discord credentials: a dry run exists to
+    # prove they work, so it must not pass without them.
+    if args.offline:
         problems = [p for p in problems if not p.startswith("DISCORD_")]
     if problems:
         print("Invalid configuration:", file=sys.stderr)
@@ -122,7 +156,7 @@ def main() -> int:
     for warning in settings.warnings():
         log.warning(warning)
 
-    return asyncio.run(run(args.dry_run, args.force_digest))
+    return asyncio.run(run(args.dry_run, args.force_digest, args.offline))
 
 
 if __name__ == "__main__":

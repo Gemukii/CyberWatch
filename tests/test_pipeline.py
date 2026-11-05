@@ -6,7 +6,8 @@ import pytest
 import publisher
 import sources
 from pipeline import Pipeline
-from selection import distinct_stories
+from filters import score_article
+from selection import distinct_stories, is_urgent
 from sources import Article, FeedResult
 from state import url_hash
 from summarizer import Summary
@@ -214,3 +215,20 @@ def test_article_with_a_new_cve_stays():
     item.cves = [CVE, "CVE-2026-2222"]
 
     assert distinct_stories([item], [CVE]) == [item]
+
+
+def test_reported_exploitation_on_a_watched_product_is_urgent():
+    item = Article(title="Fortinet zero-day", url="https://example.com/z", source="Test")
+    score_article(item, watchlist=["fortinet"])
+
+    urgent, reason = is_urgent(item, make_settings())
+
+    assert urgent
+    assert "fortinet" in reason
+
+
+def test_reported_exploitation_elsewhere_waits_for_the_digest():
+    item = Article(title="Fortinet zero-day", url="https://example.com/z", source="Test")
+    score_article(item, watchlist=["cisco"])
+
+    assert is_urgent(item, make_settings()) == (False, "")
