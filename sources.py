@@ -49,6 +49,7 @@ class Article:
     kev_cves: list[str] = field(default_factory=list)
     kev_ransomware: bool = False
     epss_max: float | None = None
+    epss_scores: dict[str, float] = field(default_factory=dict)
 
     # Watchlist terms found in the article
     watch_matches: list[str] = field(default_factory=list)
@@ -73,6 +74,11 @@ class FeedResult:
     name: str
     articles: list[Article] = field(default_factory=list)
     error: str | None = None
+
+    @property
+    def newest_ts(self) -> float:
+        """Date of the feed's latest entry, 0 if it has none."""
+        return max((a.published_ts for a in self.articles), default=0.0)
 
 
 def is_public_http_url(url: str) -> bool:

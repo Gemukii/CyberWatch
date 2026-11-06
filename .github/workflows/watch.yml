@@ -26,12 +26,12 @@ concurrency:
 
 jobs:
   watch:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -49,9 +49,10 @@ jobs:
           # A secret, not a variable: this repository is public, and the list
           # says what you run.
           WATCHLIST: ${{ secrets.WATCHLIST }}
+          # Optional: lets a monitoring service alert when runs stop.
+          HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
           AI_PROVIDER: ${{ vars.AI_PROVIDER || 'gemini' }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-flash-lite-latest' }}
-          # This model rejects thinkingBudget: 0.
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
           GEMINI_DISABLE_THINKING: "false"
           TIMEZONE: Europe/Paris
           TZ: Europe/Paris

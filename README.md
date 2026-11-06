@@ -20,7 +20,7 @@ As an example, one run on 5 November 2026 read 40 recent articles, kept the 15 b
 ## Features
 
 * **Daily digest:** the best articles of the day, capped by a daily quota
-* **Immediate alerts:** for CVEs in KEV, very high EPSS, or reported exploitation of a product on your watchlist
+* **Immediate alerts:** for CVEs in KEV, very high EPSS on a recent CVE, or reported exploitation of a product on your watchlist. Only the CVEs an article is about count, and news roundups never trigger one
 * **Late escalation:** when a CVE already covered enters KEV, a new alert links back to the article
 * **AI summaries:** threat, impact, target and action, with Gemini, a local Ollama model, or no AI
 * **Learning from votes:** 👍 and 👎 reactions adjust the ranking, within limits
@@ -134,6 +134,17 @@ Content-Type: application/json
 ```
 
 Keep `dry_run` set to `false`, because its default is `true`. Two overlapping triggers are safe: runs are queued, and each one reads what the last one published.
+
+### Alert when runs stop
+
+A run can report its own problems, but not the fact that it never started. A heartbeat covers that:
+
+1. In [healthchecks.io](https://healthchecks.io), create a check with a period of 1 hour and a grace time of 3 hours, then copy its ping URL.
+2. Add it as the secret `HEARTBEAT_URL`.
+
+Each live run pings it, and a failed run pings its `/fail` address. The service alerts you when a run fails, or when the pings stop.
+
+Each run also warns about feeds that don't respond, or that have published nothing for `FEED_STALE_DAYS`.
 
 ## Project structure
 

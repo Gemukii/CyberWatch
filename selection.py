@@ -8,11 +8,27 @@ only the best of the day make it out. See docs/ARCHITECTURE.md.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from enrichment import extract_cves
+
 log = logging.getLogger(__name__)
+
+# News digests: they mention many stories, so they collect signals none of
+# which is what the article is about.
+ROUNDUP_RE = re.compile(
+    r"\bthreatsday\b|\bweekly recap\b|\bweek in (review|security)\b|\bin other news\b"
+    r"|\bround-?up\b|\+\s*\d+ more stories|\bbulletin d.actualit",
+    re.IGNORECASE,
+)
+# How far into the text a CVE still counts as what the article is about.
+LEAD_CHARS = 800
+# EPSS stays high for years on old CVEs: on its own it says nothing new about
+# them. KEV is different, a listing is news whatever the CVE's age.
+EPSS_RECENT_YEARS = 2
 
 
 class CandidateQueue:
@@ -195,6 +211,35 @@ def distinct_stories(articles: list, covered_cves=()) -> list:
     return kept
 
 
+def shortlist(candidates: list, limit: int, in_kev) -> list:
+    """
+    Keeps the best `limit` candidates, KEV-listed ones first.
+
+    Only sees the title and RSS summary, so it can't catch a CVE named further
+    down the article.
+    """
+    listed = [a for a in candidates if in_kev(extract_cves(a.title, a.content))]
+    others = [a for a in candidates if a not in listed]
+    return (listed + others)[:limit]
+
+
+def lead_cves(article) -> list[str]:
+    """The CVEs the article is about, rather than ones it mentions in passing."""
+    cves = getattr(article, "cves", None) or []
+    head = f"{article.title} {article.content[:LEAD_CHARS]}".upper()
+    return [cve for cve in cves if cve.upper() in head]
+
+
+def _lead_epss(article, lead: list[str]) -> float | None:
+    """Highest EPSS among the article's own, recent CVEs."""
+    oldest = datetime.now(tz=timezone.utc).year - EPSS_RECENT_YEARS
+    scores = getattr(article, "epss_scores", None) or {}
+    return max(
+        (scores[cve] for cve in lead if cve in scores and int(cve.split("-")[1]) >= oldest),
+        default=None,
+    )
+
+
 def is_urgent(article, settings) -> tuple[bool, str]:
     """
     Decides whether an article warrants immediate publication, outside the quota.
@@ -204,16 +249,27 @@ def is_urgent(article, settings) -> tuple[bool, str]:
 
     Returns (urgent, human-readable reason).
     """
+    # A roundup's signals belong to a dozen different stories. It can still
+    # reach the digest, on its score.
+    if ROUNDUP_RE.search(article.title):
+        return False, ""
+
+    lead = lead_cves(article)
+
     # 1. Listed in the CISA KEV catalog = confirmed exploitation in the
-    #    wild. The strongest signal available for free.
-    if getattr(article, "kev_cves", None):
-        cve = article.kev_cves[0]
+    #    wild. The strongest signal available for free. An article's only
+    #    CVE counts wherever it sits: better a spare alert than a missed one.
+    kev_cves = getattr(article, "kev_cves", None) or []
+    if len(getattr(article, "cves", None) or []) > 1:
+        kev_cves = [cve for cve in kev_cves if cve in lead]
+    if kev_cves:
+        cve = kev_cves[0]
         if getattr(article, "kev_ransomware", False):
             return True, f"{cve} in the CISA KEV catalog — known ransomware campaign"
         return True, f"{cve} in the CISA KEV catalog — confirmed exploitation"
 
     # 2. Very high EPSS: exploitation judged highly likely within 30 days.
-    epss = getattr(article, "epss_max", None)
+    epss = _lead_epss(article, lead)
     if epss is not None and epss >= settings.urgent_epss_threshold:
         return True, f"EPSS {epss:.0%} — exploitation highly likely within 30 days"
 

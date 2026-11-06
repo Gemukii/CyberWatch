@@ -56,7 +56,8 @@ class Settings:
     # see the daily budget below.
     interval_minutes: int = _env_int("INTERVAL_MINUTES", 60)
     max_age_hours: int = _env_int("MAX_AGE_HOURS", 24)
-    # Lifetime of a candidate in the queue.
+    # Lifetime of a candidate in the queue. bot.py only: a one-shot run starts
+    # with an empty queue, so MAX_AGE_HOURS is what bounds it there.
     candidate_ttl_hours: int = _env_int("CANDIDATE_TTL_HOURS", 36)
     # Number of articles pushed through text extraction + enrichment per
     # collection cycle. Free in tokens, but network-costly.
@@ -135,8 +136,8 @@ class Settings:
     # --- AI summarization ---
     ai_provider: str = os.getenv("AI_PROVIDER", "gemini").strip().lower()
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-    gemini_disable_thinking: bool = _env_bool("GEMINI_DISABLE_THINKING", True)
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    gemini_disable_thinking: bool = _env_bool("GEMINI_DISABLE_THINKING", False)
     # Headroom for the JSON payload itself (title + up to 4 points + CVEs
     # + tags). Only matters once thinking no longer eats the budget.
     gemini_max_output_tokens: int = _env_int("GEMINI_MAX_OUTPUT_TOKENS", 1536)
@@ -170,6 +171,16 @@ class Settings:
     history_limit: int = _env_int("HISTORY_LIMIT", 0)
     # Alert if a feed returns nothing for N consecutive cycles.
     feed_failure_threshold: int = _env_int("FEED_FAILURE_THRESHOLD", 3)
+    # A feed with nothing newer than this looks dead. Needs no memory between
+    # runs, so it also works for one-shot runs. Some official feeds post
+    # about once a month: keep it well above that.
+    feed_stale_days: int = _env_int("FEED_STALE_DAYS", 60)
+
+    # --- Monitoring ---
+    # Pinged after each live one-shot run, with /fail added if the run failed.
+    # A service such as healthchecks.io then alerts when the pings stop, which
+    # nothing inside the run can do. Empty = no ping.
+    heartbeat_url: str = os.getenv("HEARTBEAT_URL", "").strip()
 
     # --- KEV retrospective check ---
     # A CVE can take days or weeks to reach the KEV catalog after its

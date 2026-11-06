@@ -23,6 +23,7 @@ import logging
 import os
 import sys
 
+import aiohttp
 import discord
 
 from config import settings
@@ -82,7 +83,13 @@ async def run_with_channel(pipeline: Pipeline, channel, force_digest: bool) -> d
     return await pipeline.run_cycle(channel, force_digest=force_digest)
 
 
-def run_problems(report: dict, ai_failure: str | None, digest_missed: bool) -> list[tuple[str, str]]:
+def run_problems(
+    report: dict,
+    ai_failure: str | None,
+    digest_missed: bool,
+    failed_feeds: list[str] = (),
+    stale_feeds: list[str] = (),
+) -> list[tuple[str, str]]:
     """What went wrong despite a clean finish, as (level, message) pairs."""
     cause = f" ({ai_failure})" if ai_failure else ""
     problems = []
@@ -92,6 +99,10 @@ def run_problems(report: dict, ai_failure: str | None, digest_missed: bool) -> l
         problems.append(("warning", f"{report['degraded']} article(s) published without AI{cause}."))
     if report["deferred"]:
         problems.append(("warning", f"{report['deferred']} article(s) deferred, AI unavailable{cause}."))
+    if failed_feeds:
+        problems.append(("warning", f"Feeds not responding: {', '.join(failed_feeds)}."))
+    if stale_feeds:
+        problems.append(("warning", f"Feeds with nothing new for a long time: {', '.join(stale_feeds)}."))
     return problems
 
 
@@ -103,8 +114,33 @@ def announce_problems(problems: list[tuple[str, str]]) -> None:
             print(f"::{level} title=CyberWatch::{text}", flush=True)
 
 
+async def ping_heartbeat(url: str, failed: bool, timeout: int = 10) -> None:
+    """
+    Tells the monitoring service how the run ended.
+
+    Its silence is the real alert: it's what reports runs that stopped
+    happening. A failed ping must never fail the run, and the URL works like
+    a password, so it stays out of the logs.
+    """
+    if not url:
+        return
+    target = f"{url.rstrip('/')}/fail" if failed else url
+    try:
+        client_timeout = aiohttp.ClientTimeout(total=timeout)
+        async with aiohttp.ClientSession(timeout=client_timeout) as session:
+            async with session.get(target) as resp:
+                if resp.status != 200:
+                    log.warning("Heartbeat refused: HTTP %s", resp.status)
+    except Exception as exc:
+        log.warning("Heartbeat failed: %s", type(exc).__name__)
+
+
 def write_run_summary(
-    report: dict, failed_feeds: list[str], mode: str, ai_failure: str | None = None
+    report: dict,
+    failed_feeds: list[str],
+    mode: str,
+    ai_failure: str | None = None,
+    stale_feeds: list[str] = (),
 ) -> None:
     """
     Shows what the run did on its GitHub page.
@@ -126,6 +162,7 @@ def write_run_summary(
         ("Deferred (AI unavailable)", report["deferred"]),
         ("AI failure", ai_failure or "none"),
         ("Failed feeds", ", ".join(failed_feeds) or "none"),
+        ("Stale feeds", ", ".join(stale_feeds) or "none"),
     ]
     lines = ["| | |", "|---|---|", *(f"| {name} | {value} |" for name, value in rows)]
     with open(path, "a", encoding="utf-8") as fh:
@@ -157,12 +194,14 @@ async def run(dry_run: bool, force_digest: bool, offline: bool = False) -> int:
 
     mode = "offline" if offline else "dry run" if dry_run else "live"
     ai_failure = pipeline.summarizer.last_failure
-    write_run_summary(report, pipeline.failed_feeds, mode, ai_failure)
+    write_run_summary(report, pipeline.failed_feeds, mode, ai_failure, pipeline.stale_feeds)
 
     # Still due after the cycle means every attempt to send it failed: the
     # run has to go red, or a lost digest looks like any quiet day.
     digest_missed = pipeline.budget.digest_due()
-    announce_problems(run_problems(report, ai_failure, digest_missed))
+    announce_problems(
+        run_problems(report, ai_failure, digest_missed, pipeline.failed_feeds, pipeline.stale_feeds)
+    )
     return 1 if digest_missed else 0
 
 
@@ -187,7 +226,10 @@ def main() -> int:
     for warning in settings.warnings():
         log.warning(warning)
 
-    return asyncio.run(run(args.dry_run, args.force_digest, args.offline))
+    code = asyncio.run(run(args.dry_run, args.force_digest, args.offline))
+    if not (args.dry_run or args.offline):
+        asyncio.run(ping_heartbeat(settings.heartbeat_url, failed=code != 0))
+    return code
 
 
 if __name__ == "__main__":

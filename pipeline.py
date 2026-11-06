@@ -49,6 +49,7 @@ class Pipeline:
         )
         self._feedback_refreshed_at = 0.0
         self.failed_feeds: list[str] = []
+        self.stale_feeds: list[str] = []
         # Prevents two simultaneous cycles (auto loop + manual command).
         self.cycle_lock = asyncio.Lock()
 
@@ -85,6 +86,10 @@ class Pipeline:
         )
         self.state.record_feed_results(feed_results)
         self.failed_feeds = [r.name for r in feed_results if r.error]
+        stale_before = time.time() - s.feed_stale_days * 86400
+        self.stale_feeds = [
+            r.name for r in feed_results if not r.error and r.newest_ts < stale_before
+        ]
         report["fetched"] = len(articles)
 
         unhealthy = self.state.unhealthy_feeds(s.feed_failure_threshold)
@@ -96,17 +101,22 @@ class Pipeline:
 
         # Pre-filter on title + RSS summary, lowered threshold: keeps margin
         # before the network-costly steps.
-        shortlist = filters.select_articles(
+        candidates = filters.select_articles(
             articles,
             self.state,
             min_score=max(1, s.min_score - 3),
             similarity=s.dedup_similarity,
-            limit=s.shortlist_limit,
             watchlist=s.watchlist,
             watchlist_weight=s.watchlist_weight,
         )
-        if not shortlist:
+        if not candidates:
             return []
+
+        # The catalog is one download whatever the number of articles, so it
+        # can run before the cut: a dull headline on an exploited flaw would
+        # otherwise lose its place before anyone checks it.
+        await self.enricher.ensure_kev()
+        shortlist = selection_mod.shortlist(candidates, s.shortlist_limit, self.enricher.in_kev)
 
         if s.fetch_fulltext:
             await sources.enrich_with_fulltext(

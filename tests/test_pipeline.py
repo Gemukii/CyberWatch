@@ -7,7 +7,7 @@ import publisher
 import sources
 from pipeline import Pipeline
 from filters import score_article
-from selection import distinct_stories, is_urgent
+from selection import distinct_stories, is_urgent, shortlist
 from sources import Article, FeedResult
 from state import url_hash
 from summarizer import QuotaExceeded, Summary
@@ -318,3 +318,80 @@ def test_header_lists_what_follows():
     assert "🔴 A title" in embed.description
     assert "without AI" not in embed.description
     assert embed.footer.text.endswith("#digest")
+
+
+def in_catalog(*cves):
+    return lambda found: [cve for cve in found if cve in cves]
+
+
+def test_kev_listed_article_survives_the_shortlist_cut():
+    dull = article(title=f"Vendor notes {CVE}", url="https://a.example/1", score=3)
+    loud = [article(url=f"https://b.example/{i}", score=30) for i in range(3)]
+
+    kept = shortlist(loud + [dull], 2, in_catalog(CVE))
+
+    assert kept[0] is dull
+    assert len(kept) == 2
+
+
+def test_roundup_is_never_urgent():
+    item = article(title="ThreatsDay: RCE, Breaches + 17 More Stories", score=99)
+    item.cves = item.kev_cves = [CVE]
+
+    assert is_urgent(item, make_settings()) == (False, "")
+
+
+def test_kev_cve_mentioned_in_passing_is_not_urgent():
+    item = article(score=10)
+    item.summary = f"Patch for {CVE}. " + "Long explanation. " * 60 + "Unlike CVE-2026-2222."
+    item.cves = [CVE, "CVE-2026-2222"]
+    item.kev_cves = ["CVE-2026-2222"]
+
+    assert is_urgent(item, make_settings()) == (False, "")
+
+
+def test_article_about_a_kev_cve_is_urgent():
+    item = article(score=10)
+    item.summary = "Unrelated. " * 5 + f"Attackers exploit {CVE} and CVE-2026-2222."
+    item.cves = [CVE, "CVE-2026-2222"]
+    item.kev_cves = [CVE]
+
+    assert is_urgent(item, make_settings())[0]
+
+
+def test_high_epss_needs_a_recent_cve():
+    year = time.gmtime().tm_year
+    old, recent = "CVE-2016-6210", f"CVE-{year}-1234"
+    item = article(score=10)
+    item.summary = f"{old} is back."
+    item.cves = [old]
+    item.epss_scores = {old: 0.9}
+
+    assert is_urgent(item, make_settings()) == (False, "")
+
+    item.summary = f"{recent} is exploited."
+    item.cves = [recent]
+    item.epss_scores = {recent: 0.9}
+
+    assert is_urgent(item, make_settings())[0]
+
+
+def test_feed_without_recent_entries_is_reported(monkeypatch):
+    quiet = article(url="https://a.example/old")
+    quiet.published_ts = time.time() - 90 * 86400
+
+    async def fetch(*args, **kwargs):
+        return [], [
+            FeedResult(name="dead", articles=[quiet]),
+            FeedResult(name="empty"),
+            FeedResult(name="alive", articles=[article()]),
+            FeedResult(name="broken", error="HTTP 500"),
+        ]
+
+    monkeypatch.setattr(sources, "fetch_all_feeds", fetch)
+    pipe = primed(FakeChannel(), make_settings(digest_hour=23))
+
+    asyncio.run(pipe.collect({}))
+
+    assert pipe.stale_feeds == ["dead", "empty"]
+    assert pipe.failed_feeds == ["broken"]

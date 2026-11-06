@@ -290,7 +290,7 @@ def select_articles(
     state: State,
     min_score: int,
     similarity: float,
-    limit: int,
+    limit: int | None = None,
     watchlist: list[str] | None = None,
     watchlist_weight: int = 4,
 ) -> list[Article]:

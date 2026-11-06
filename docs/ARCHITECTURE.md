@@ -135,6 +135,10 @@ A one-shot run starts with nothing in memory, so `run_once.py` rebuilds this sta
 
 `WATCHLIST` lists the products you run. A match adds to the score, once however many terms match, and shows in the embed. Reported exploitation of a listed product becomes an urgent alert, still bounded by `URGENT_DAILY_MAX`.
 
+The KEV catalog is checked before the shortlist cut, so a dull headline on an exploited flaw keeps its place. That check only sees the title and RSS summary.
+
+An alert needs the signal to belong to the story. News roundups are never urgent, and in an article with several CVEs only those in the title or the opening count. EPSS also ignores CVEs older than two years, because it stays high on them for years.
+
 The `watchlist` signal is factual, so votes never adjust it.
 
 ## Security

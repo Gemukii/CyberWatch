@@ -169,8 +169,8 @@ class Enricher:
 
             scores = await self.fetch_epss(session, all_cves)
             for article in articles:
-                values = [scores[c] for c in article.cves if c in scores]
-                article.epss_max = max(values) if values else None
+                article.epss_scores = {c: scores[c] for c in article.cves if c in scores}
+                article.epss_max = max(article.epss_scores.values(), default=None)
 
         kev_hits = sum(1 for a in articles if a.kev_cves)
         if kev_hits:

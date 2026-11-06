@@ -101,3 +101,62 @@ def test_ai_failure_is_named_on_the_run():
     assert problems == [
         ("warning", "2 article(s) published without AI (gemini: HTTP 429).")
     ]
+
+
+def test_live_run_reports_its_outcome_to_the_heartbeat(monkeypatch):
+    pings = []
+
+    async def failed_run(*args):
+        return 1
+
+    async def ping(url, failed):
+        pings.append((url, failed))
+
+    monkeypatch.setattr(run_once, "run", failed_run)
+    monkeypatch.setattr(run_once, "ping_heartbeat", ping)
+    monkeypatch.setattr(
+        run_once,
+        "settings",
+        make_settings(discord_token="t", channel_id=1, feeds=FEED, ai_provider="none", heartbeat_url="https://hc.example/x"),
+    )
+    monkeypatch.setattr(sys, "argv", ["run_once.py"])
+
+    assert run_once.main() == 1
+    assert pings == [("https://hc.example/x", True)]
+
+
+def test_dry_run_leaves_the_heartbeat_alone(monkeypatch):
+    pings = []
+
+    async def clean_run(*args):
+        return 0
+
+    async def ping(url, failed):
+        pings.append(url)
+
+    monkeypatch.setattr(run_once, "run", clean_run)
+    monkeypatch.setattr(run_once, "ping_heartbeat", ping)
+    monkeypatch.setattr(
+        run_once,
+        "settings",
+        make_settings(discord_token="t", channel_id=1, feeds=FEED, ai_provider="none"),
+    )
+    monkeypatch.setattr(sys, "argv", ["run_once.py", "--dry-run"])
+
+    assert run_once.main() == 0
+    assert pings == []
+
+
+def test_unreachable_heartbeat_does_not_fail_the_run():
+    asyncio.run(run_once.ping_heartbeat("http://127.0.0.1:9/x", failed=False, timeout=1))
+
+
+def test_feed_problems_are_named_on_the_run():
+    report = {"degraded": 0, "deferred": 0}
+
+    problems = run_once.run_problems(report, None, False, ["a"], ["b"])
+
+    assert problems == [
+        ("warning", "Feeds not responding: a."),
+        ("warning", "Feeds with nothing new for a long time: b."),
+    ]
