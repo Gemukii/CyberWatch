@@ -36,6 +36,7 @@ TITLE_LIMIT = 256
 AUTHOR_LIMIT = 256
 FIELD_LIMIT = 1024
 SAFE_DESC_LIMIT = 1800   # our own cap, well under Discord's
+CONTENTS_TITLE_LIMIT = 90
 
 # No mention will ever be resolved by Discord from the bot's messages.
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -77,20 +78,18 @@ def build_embed(
     # rebuild the anti-duplicate index on startup (state.py).
     embed.set_author(name=_truncate(f"{article.source} · {article.title}", AUTHOR_LIMIT))
 
-    # V1.1 — local category and tags.
-    embed.add_field(
-        name="Category",
-        value=f"**{article.category}**",
-        inline=True,
-    )
-
-    if article.category_tags:
-        tags = " · ".join(f"`{tag}`" for tag in article.category_tags[:8])
+    # Most useful first: why it can't wait, then the facts on one row, then
+    # the details.
+    if urgent_reason:
         embed.add_field(
-            name="Topics",
-            value=_truncate(tags, FIELD_LIMIT),
+            name="🚨 Why it's urgent",
+            value=_truncate(urgent_reason, FIELD_LIMIT),
             inline=False,
         )
+
+    severity = summary.severity if summary.severity in SEVERITY_STYLE else "Medium"
+    embed.add_field(name="Severity", value=f"{emoji} {severity}", inline=True)
+    embed.add_field(name="Category", value=article.category, inline=True)
 
     # Authoritative signals: worth more than an adjective in an article.
     if article.kev_cves:
@@ -119,12 +118,9 @@ def build_embed(
             inline=False,
         )
 
-    if urgent_reason:
-        embed.add_field(
-            name="🚨 Immediate alert",
-            value=_truncate(urgent_reason, FIELD_LIMIT),
-            inline=False,
-        )
+    if article.category_tags:
+        tags = " · ".join(f"`{tag}`" for tag in article.category_tags[:8])
+        embed.add_field(name="Topics", value=_truncate(tags, FIELD_LIMIT), inline=False)
 
     # Signals recorded here: this is what makes a vote attributable to a
     # specific criterion rather than to the whole article.
@@ -134,13 +130,6 @@ def build_embed(
         footer += f" · {encoded}"
     if urgent_reason:
         footer += f" · {URGENT_MARKER}"
-    if article.category:
-        footer += f" · category={article.category.lower().replace(' ', '-')}"
-    if article.category_tags:
-        footer += " · " + " ".join(
-            f"#{tag.lower().replace(' ', '-')}"
-            for tag in article.category_tags[:5]
-        )
     if summary.generated_by == "heuristic":
         footer += " · summary without AI"
     embed.set_footer(text=_truncate(footer, 300))
@@ -148,40 +137,53 @@ def build_embed(
     return embed
 
 
+def _contents(items: list[tuple[Article, Summary]]) -> str:
+    """One line per article, so the batch can be read at a glance."""
+    lines = []
+    for _, summary in items:
+        _, emoji = SEVERITY_STYLE.get(summary.severity, SEVERITY_STYLE["Medium"])
+        lines.append(f"{emoji} {_truncate(summary.title, CONTENTS_TITLE_LIMIT)}")
+    return "\n".join(lines)
+
+
 def build_header_embed(
-    count: int,
+    items: list[tuple[Article, Summary]],
     provider: str,
     deferred: int = 0,
     urgent: bool = False,
-    quota: int | None = None,
     candidates: int | None = None,
 ) -> discord.Embed:
     """
-    Summary header.
+    Summary header: what follows, then anything the reader should know.
 
     Two forms: the immediate alert, and the daily digest which reports how
-    many candidates were dropped — that line is what makes the bot's
-    selectivity visible to the reader.
+    many candidates it beat — that's what makes the bot's selectivity
+    visible to the reader.
     """
+    count = len(items)
+    plural = "s" if count != 1 else ""
     if urgent:
-        vuln_plural = "ies" if count > 1 else "y"
+        intro = f"**{count}** urgent article{plural}, published without waiting for the digest."
+    elif candidates and candidates > count:
+        intro = f"**{count}** article{plural} selected today, out of {candidates} candidates."
+    else:
+        intro = f"**{count}** article{plural} selected today."
+
+    notes = []
+    without_ai = sum(1 for _, summary in items if summary.generated_by == "heuristic")
+    if without_ai and provider != "none":
+        notes.append(f"⚠️ {without_ai} summar{'ies' if without_ai != 1 else 'y'} without AI: extracts from the source.")
+    if deferred:
+        notes.append(f"⏸️ {deferred} deferred to the next cycle (AI unavailable).")
+    description = "\n\n".join(filter(None, [intro, _contents(items), "\n".join(notes)]))
+
+    if urgent:
         return discord.Embed(
             title="🚨 Immediate cyber alert",
-            description=(
-                f"**{count}** vulnerabilit{vuln_plural} with confirmed or highly "
-                "likely exploitation, published outside the daily digest."
-            ),
+            description=description,
             color=0xE01E37,
             timestamp=datetime.now(tz=timezone.utc),
         ).set_footer(text=f"Summaries: {provider} · {URGENT_MARKER}")
-
-    description = f"**{count}** article{'s' if count != 1 else ''} selected today."
-    if quota:
-        description += f" Daily cap: {quota}."
-    if candidates and candidates > count:
-        description += f"\n{candidates - count} other candidate(s) dropped after arbitration."
-    if deferred:
-        description += f"\n⏸️ {deferred} deferred to the next cycle (AI quota)."
 
     return discord.Embed(
         title="🛡️ Cyber watch — today's digest",
@@ -268,7 +270,6 @@ async def publish(
     deferred: int = 0,
     urgent_reasons: dict[str, str] | None = None,
     mention: str = "none",
-    quota: int | None = None,
     candidates: int | None = None,
     add_vote_reactions: bool = True,
 ) -> list[tuple[Article, Summary]]:
@@ -307,8 +308,8 @@ async def publish(
         await channel.send(
             content=content,
             embed=build_header_embed(
-                len(items), provider, deferred,
-                urgent=is_urgent_batch, quota=quota, candidates=candidates,
+                items, provider, deferred,
+                urgent=is_urgent_batch, candidates=candidates,
             ),
             allowed_mentions=allowed,
         )

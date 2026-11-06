@@ -346,6 +346,7 @@ class State:
         digest: int = 0,
         posted: int = 0,
         deferred: int = 0,
+        degraded: int = 0,
         kev_escalations: int = 0,
         error: str | None = None,
     ) -> None:
@@ -364,6 +365,7 @@ class State:
                 "digest": digest,
                 "posted": posted,
                 "deferred": deferred,
+                "degraded": degraded,
                 "kev_escalations": kev_escalations,
                 "error": error,
             }

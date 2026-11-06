@@ -148,6 +148,7 @@ class Pipeline:
         report: dict,
         urgent_reasons: dict[str, str] | None = None,
         candidates: int | None = None,
+        degrade: bool | None = None,
     ) -> int:
         """
         Summarizes then publishes an already-arbitrated selection, and removes
@@ -158,7 +159,7 @@ class Pipeline:
 
         s = self.settings
         log.info("Summarizing %d article(s) via %s...", len(chosen), s.ai_provider)
-        summarized, deferred = await self.summarizer.summarize_many(chosen)
+        summarized, deferred = await self.summarizer.summarize_many(chosen, degrade=degrade)
         report["deferred"] = report.get("deferred", 0) + len(deferred)
 
         posted = await publisher.publish(
@@ -168,7 +169,6 @@ class Pipeline:
             deferred=len(deferred),
             urgent_reasons=urgent_reasons,
             mention=s.urgent_mention if urgent_reasons else "none",
-            quota=None if urgent_reasons else s.daily_quota,
             candidates=candidates,
         )
 
@@ -186,6 +186,8 @@ class Pipeline:
         self.queue.remove([state_mod.url_hash(a.url) for a, _ in posted])
 
         report["posted"] = report.get("posted", 0) + len(posted)
+        if s.ai_provider != "none":
+            report["degraded"] += sum(1 for _, x in posted if x.generated_by == "heuristic")
         return len(posted)
 
     async def _escalate_kev(self, channel, report: dict) -> None:
@@ -283,7 +285,10 @@ class Pipeline:
             len(chosen), len(self.queue), [a.score for a in chosen],
         )
         report["digest"] = await self.publish_selection(
-            channel, chosen, report, candidates=len(ranked)
+            channel, chosen, report, candidates=len(ranked),
+            # Runs can be hours apart: holding the digest back for the AI can
+            # lose it for the day, and a plainer digest beats none.
+            degrade=True if s.digest_degrade_on_quota else None,
         )
         # Nothing went out (AI quota, Discord error): the digest stays due
         # and the next cycle tries again.
@@ -303,7 +308,7 @@ class Pipeline:
             self.state.note_cycle_started()
             report = {
                 "fetched": 0, "queued": 0, "queue_size": 0,
-                "urgent": 0, "digest": 0, "posted": 0, "deferred": 0,
+                "urgent": 0, "digest": 0, "posted": 0, "deferred": 0, "degraded": 0,
                 "kev_escalations": 0, "error": None,
             }
             try:

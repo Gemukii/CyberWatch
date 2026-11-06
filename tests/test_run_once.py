@@ -1,6 +1,9 @@
 import asyncio
 import sys
 import time
+import types
+
+import discord
 
 import run_once
 import sources
@@ -72,3 +75,29 @@ def test_run_reports_what_it_did_on_github(monkeypatch, tmp_path):
     text = summary.read_text(encoding="utf-8")
     assert "| Mode | offline |" in text
     assert "| Published | 1 |" in text
+
+
+def test_undelivered_digest_turns_the_run_red(monkeypatch, capsys):
+    """Discord refusing every post must not look like a quiet day."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    serving(monkeypatch)
+    monkeypatch.setattr(run_once, "settings", make_settings(discord_token="", digest_hour=0))
+
+    async def refuse(self, content=None, embed=None, **kwargs):
+        response = types.SimpleNamespace(status=500, reason="error")
+        raise discord.HTTPException(response, "refused")
+
+    monkeypatch.setattr(run_once.DryRunChannel, "send", refuse)
+
+    assert asyncio.run(run_once.run(False, False, offline=True)) == 1
+    assert "::error title=CyberWatch::The daily digest was due" in capsys.readouterr().out
+
+
+def test_ai_failure_is_named_on_the_run():
+    report = {"degraded": 2, "deferred": 0}
+
+    problems = run_once.run_problems(report, "gemini: HTTP 429", digest_missed=False)
+
+    assert problems == [
+        ("warning", "2 article(s) published without AI (gemini: HTTP 429).")
+    ]

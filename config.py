@@ -149,6 +149,9 @@ class Settings:
     # If the quota is exhausted: True = publish a degraded heuristic
     # summary, False (default) = defer the article to the next cycle.
     degrade_on_quota: bool = _env_bool("DEGRADE_ON_QUOTA", False)
+    # Same choice for the daily digest alone, on by default: scheduled runs
+    # are hours apart, so waiting for the AI can cost the whole day's digest.
+    digest_degrade_on_quota: bool = _env_bool("DIGEST_DEGRADE_ON_QUOTA", True)
 
     # --- Text retrieval ---
     fetch_fulltext: bool = _env_bool("FETCH_FULLTEXT", True)

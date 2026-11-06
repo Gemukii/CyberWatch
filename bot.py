@@ -143,6 +143,8 @@ async def cyber_now(interaction: discord.Interaction):
         message = "✅ " + " · ".join(parts)
         if report["deferred"]:
             message += f" · ⏸️ {report['deferred']} deferred, AI quota"
+        if report["degraded"]:
+            message += f" · ⚠️ {report['degraded']} without AI"
     else:
         message = (
             f"✅ Collection done: {report['fetched']} articles analyzed, "

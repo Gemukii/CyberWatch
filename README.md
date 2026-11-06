@@ -99,7 +99,9 @@ GitHub Actions runs one cycle an hour, and the bot only exists for the length of
 3. Under **Actions > watch > Run workflow**, keep `dry_run` ticked and start a run. It checks the token and history access without posting.
 4. Start another run with `dry_run` unticked to publish for real. From then on, the schedule takes over.
 
-Each run's page shows what it did: articles fetched, published and deferred, and failed feeds.
+Each run's page shows what it did: articles fetched, published, deferred or published without AI, and failed feeds.
+
+If the AI stays unavailable, the digest goes out anyway with extracts from the source, and the run shows a warning. Urgent alerts wait for the next run instead. A digest that was due but couldn't be sent turns the run red.
 
 In this mode the bot appears offline and slash commands aren't available. They need `bot.py` running on a server.
 
@@ -120,7 +122,7 @@ Matching articles rank higher and show a 🎯 field, and reported exploitation o
 GitHub skips scheduled runs under load: this project's first day got 2 runs out of about 17. An external scheduler fixes that, and GitHub's schedule stays as a fallback.
 
 1. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to this repository, with **Actions: Read and write** only and an expiry date. It can start workflows, but can't change the code or read secrets.
-2. In a scheduler such as [cron-job.org](https://cron-job.org), add an hourly job:
+2. In a scheduler such as [cron-job.org](https://cron-job.org), add an hourly job. The digest goes out on the first run after `DIGEST_HOUR`, so a job a few minutes past each hour sends it on time:
 
 ```text
 POST https://api.github.com/repos/Gemukii/CyberWatch/actions/workflows/watch.yml/dispatches

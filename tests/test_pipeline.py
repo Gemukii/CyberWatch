@@ -10,7 +10,7 @@ from filters import score_article
 from selection import distinct_stories, is_urgent
 from sources import Article, FeedResult
 from state import url_hash
-from summarizer import Summary
+from summarizer import QuotaExceeded, Summary
 
 from helpers import FakeChannel, make_settings, message
 
@@ -232,3 +232,89 @@ def test_reported_exploitation_elsewhere_waits_for_the_digest():
     score_article(item, watchlist=["cisco"])
 
     assert is_urgent(item, make_settings()) == (False, "")
+
+
+def refusing_ai(monkeypatch, pipe):
+    """Gemini gives up on every article, as it does when out of quota."""
+    async def refuse(session, item):
+        raise QuotaExceeded("Gemini unreachable", status="HTTP 429")
+
+    monkeypatch.setattr(pipe.summarizer, "_summarize_one", refuse)
+
+
+def test_digest_goes_out_without_ai_when_gemini_refuses(monkeypatch):
+    serving(monkeypatch, [article()])
+    settings = make_settings(ai_provider="gemini", digest_hour=0, enable_urgent=False)
+    channel = FakeChannel()
+    pipe = primed(channel, settings)
+    refusing_ai(monkeypatch, pipe)
+
+    report = asyncio.run(pipe.run_cycle(channel))
+
+    assert report["digest"] == 1
+    assert report["degraded"] == 1
+    assert report["deferred"] == 0
+    assert "without AI" in channel.sent[0].description
+    assert not pipe.budget.digest_due()
+    assert pipe.summarizer.last_failure == "gemini: HTTP 429"
+
+
+def test_digest_can_still_wait_for_the_ai(monkeypatch):
+    serving(monkeypatch, [article()])
+    settings = make_settings(
+        ai_provider="gemini", digest_hour=0, digest_degrade_on_quota=False
+    )
+    channel = FakeChannel()
+    pipe = primed(channel, settings)
+    refusing_ai(monkeypatch, pipe)
+
+    report = asyncio.run(pipe.run_cycle(channel))
+
+    assert report["digest"] == 0
+    assert report["deferred"] == 1
+    assert pipe.budget.digest_due()
+
+
+def test_urgent_alert_waits_for_the_ai(monkeypatch):
+    serving(monkeypatch, [article()])
+    settings = make_settings(
+        ai_provider="gemini", digest_hour=23, urgent_score_threshold=1
+    )
+    channel = FakeChannel()
+    pipe = primed(channel, settings)
+    pipe.budget.note_digest()
+    refusing_ai(monkeypatch, pipe)
+
+    report = asyncio.run(pipe.run_cycle(channel))
+
+    assert report["urgent"] == 0
+    assert report["deferred"] == 1
+    assert channel.sent == []
+
+
+def summary(severity="High", generated_by="gemini"):
+    return Summary(title="A title", bullets=["A point"], severity=severity, generated_by=generated_by)
+
+
+def test_urgent_reason_comes_first_and_footer_stays_short():
+    item = article()
+    item.category = "Vulnerability"
+    item.category_tags = ["RCE"]
+    item.signals = ["zero-day"]
+
+    embed = publisher.build_embed(item, summary(), urgent_reason="in the KEV catalog")
+
+    assert embed.fields[0].value == "in the KEV catalog"
+    assert [f.name for f in embed.fields[1:3]] == ["Severity", "Category"]
+    assert embed.footer.text == "Score 20 · sig:zero-day · #urgent"
+
+
+def test_header_lists_what_follows():
+    embed = publisher.build_header_embed(
+        [(article(), summary("Critical"))], "gemini", candidates=9
+    )
+
+    assert "out of 9 candidates" in embed.description
+    assert "🔴 A title" in embed.description
+    assert "without AI" not in embed.description
+    assert embed.footer.text.endswith("#digest")

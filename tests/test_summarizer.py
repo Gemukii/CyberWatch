@@ -98,3 +98,21 @@ def test_article_url_stays_out_of_the_trusted_metadata():
     asyncio.run(summarizer._summarize_one(None, item))
 
     assert "CVE-2026-0001" not in prompts[0]
+
+
+def test_fallback_summary_prefers_facts_over_page_furniture():
+    text = (
+        "Subscribe to our newsletter to get the latest headlines every morning. "
+        "Security teams have been very busy over the course of this whole week. "
+        "Attackers exploit CVE-2026-1234 to take over unpatched mail servers. "
+        "The vendor shipped a patch for all supported versions on Monday. "
+        "How much damage can a single stolen login really do to a company? "
+        "The post Title appeared first on an outlet nobody needs to read about."
+    )
+
+    bullets = heuristic_summary(article(summary="Title " + text)).bullets
+
+    assert bullets[0].startswith("Security teams")
+    assert bullets[1].startswith("Attackers exploit")
+    assert len(bullets) == 3
+    assert not any("newsletter" in b or "damage" in b or "appeared" in b for b in bullets)

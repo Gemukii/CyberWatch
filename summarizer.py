@@ -19,6 +19,7 @@ import aiohttp
 
 from enrichment import extract_cves
 from sources import Article
+from state import normalize_title
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,12 @@ SEVERITIES = ("Low", "Medium", "High", "Critical")
 
 class QuotaExceeded(RuntimeError):
     """AI provider quota exhausted: no point retrying this cycle."""
+
+    def __init__(self, message: str, status: str = "unavailable"):
+        super().__init__(message)
+        # Short on purpose: it ends up on a public run page, unlike the
+        # provider's response body.
+        self.status = status
 
 
 @dataclass
@@ -289,9 +296,46 @@ def _clean_truncate(text: str, limit: int) -> str:
     return cut.rstrip(" ,.;:-–—") + "…"
 
 
+# Page furniture that text extraction lets through.
+BOILERPLATE_RE = re.compile(
+    r"\b(read more|subscribe|newsletter|sign up|click here|cookies?|advertisement"
+    r"|all rights reserved|follow us|share this|related articles?|appeared first on)\b",
+    re.IGNORECASE,
+)
+# Sentences that say what happened, in the feeds' two languages.
+FACT_RE = re.compile(
+    r"CVE-\d|vulnerab|vulnérab|exploit|patch|correctif|flaw|faille|attack|attaque"
+    r"|breach|ransomware|rançongiciel|malware|compromis|hack",
+    re.IGNORECASE,
+)
+
+
+def _key_sentences(text: str, title: str, limit: int = 3) -> list[str]:
+    """
+    Picks the sentences worth reading, kept in reading order.
+
+    Sentences stating a fact come first: an article often opens on context
+    that says nothing once it's out of the page.
+    """
+    # Some feeds open their text with the headline, already shown above.
+    if text.lower().startswith(title.lower()):
+        text = text[len(title):].lstrip(" .:-–—")
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text)]
+    usable = [
+        s for s in sentences
+        if len(s) > 40
+        and not s.endswith("?")  # a teaser, it states nothing
+        and not BOILERPLATE_RE.search(s)
+        and normalize_title(s) != normalize_title(title)
+    ]
+    facts = [s for s in usable if FACT_RE.search(s)][:limit]
+    others = [s for s in usable if s not in facts][: limit - len(facts)]
+    return [s for s in usable if s in facts or s in others]
+
+
 def heuristic_summary(article: Article) -> Summary:
     """
-    Fallback summary: the article's first few sentences, trimmed.
+    Fallback summary: the article's most factual sentences, trimmed.
     Weaker than an LLM, but it's the default mode when AI_PROVIDER=none.
 
     This text goes straight from the web to Discord, so it gets the same
@@ -299,9 +343,8 @@ def heuristic_summary(article: Article) -> Summary:
     """
     text, flags = sanitize_content(article.content or article.title)
     title, title_flags = sanitize_content(article.title)
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if len(s.strip()) > 40]
-    bullets = [_clean_truncate(_neutralize(s), 250) for s in sentences[:3]] or [
-        _clean_truncate(_neutralize(title), 250)
+    bullets = [_clean_truncate(_neutralize(s), 200) for s in _key_sentences(text, title)] or [
+        _clean_truncate(_neutralize(title), 200)
     ]
 
     lowered = f"{title} {text}".lower()
@@ -332,9 +375,11 @@ class Summarizer:
     def __init__(self, settings):
         self.s = settings
         self.provider = settings.ai_provider
+        # Why the provider last gave up, for the run report.
+        self.last_failure: str | None = None
 
     async def summarize_many(
-        self, articles: list[Article]
+        self, articles: list[Article], degrade: bool | None = None
     ) -> tuple[list[tuple[Article, Summary]], list[Article]]:
         """
         Summarizes articles **serially**, with a pause between each call:
@@ -344,10 +389,14 @@ class Summarizer:
         Returns (summaries, deferred articles). A deferred article is
         neither published nor recorded: it comes back next cycle with a
         clean slate, rather than being published with a degraded summary.
+        `degrade` overrides DEGRADE_ON_QUOTA: True publishes those articles
+        with a heuristic summary instead.
         """
         if self.provider == "none":
             return [(a, heuristic_summary(a)) for a in articles], []
 
+        if degrade is None:
+            degrade = self.s.degrade_on_quota
         results: list[tuple[Article, Summary]] = []
         deferred: list[Article] = []
 
@@ -358,9 +407,13 @@ class Summarizer:
                     results.append((article, await self._summarize_one(session, article)))
                 except QuotaExceeded as exc:
                     # Quota exhausted: no point trying the rest.
-                    log.warning("%s — %d article(s) deferred", exc, len(articles) - index)
                     remaining = articles[index:]
-                    if self.s.degrade_on_quota:
+                    self.last_failure = f"{self.provider}: {exc.status}"
+                    log.warning(
+                        "%s — %d article(s) %s", exc, len(remaining),
+                        "published without AI" if degrade else "deferred",
+                    )
+                    if degrade:
                         results.extend((a, heuristic_summary(a)) for a in remaining)
                     else:
                         deferred.extend(remaining)
@@ -444,13 +497,14 @@ class Summarizer:
             "x-goog-api-key": self.s.gemini_api_key,  # header only, never in the URL
         }
 
-        last_error = ""
+        last_error, status = "", "unavailable"
         for attempt in range(self.s.ai_max_retries + 1):
             async with session.post(url, json=payload, headers=headers) as resp:
                 body = await resp.text()
                 if resp.status == 200:
                     return self._read_gemini_body(body)
-                last_error = f"HTTP {resp.status}: {body[:200]}"
+                status = f"HTTP {resp.status}"
+                last_error = f"{status}: {body[:200]}"
                 # 429 = quota, 5xx = transient issue: both deserve a retry.
                 retryable = resp.status == 429 or 500 <= resp.status < 600
                 if not retryable:
@@ -461,7 +515,10 @@ class Summarizer:
                 log.info("Gemini unavailable (%s) — retrying in %.0fs", last_error[:60], wait)
                 await asyncio.sleep(wait)
 
-        raise QuotaExceeded(f"Gemini unreachable after {self.s.ai_max_retries + 1} attempts ({last_error[:80]})")
+        raise QuotaExceeded(
+            f"Gemini unreachable after {self.s.ai_max_retries + 1} attempts ({last_error[:80]})",
+            status=status,
+        )
 
     @staticmethod
     def _read_gemini_body(body: str) -> str:
