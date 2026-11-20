@@ -395,3 +395,84 @@ def test_feed_without_recent_entries_is_reported(monkeypatch):
 
     assert pipe.stale_feeds == ["dead", "empty"]
     assert pipe.failed_feeds == ["broken"]
+
+
+# --- Corroborated alerts ---
+
+def critical_article(sources=3, url="https://example.com/j"):
+    item = Article(
+        title="Critical Java4Shell flaw allows remote code execution",
+        url=url,
+        source="Test",
+        summary="A long enough description of the vulnerability. " * 8,
+    )
+    item.corroboration = sources
+    score_article(item)
+    return item
+
+
+def test_critical_flaw_reported_widely_is_urgent_before_kev():
+    urgent, reason = is_urgent(critical_article(sources=3), make_settings())
+
+    assert urgent
+    assert "3 sources" in reason
+
+
+def test_critical_flaw_from_one_source_waits_for_the_digest():
+    assert is_urgent(critical_article(sources=2), make_settings()) == (False, "")
+
+
+def test_reported_exploitation_from_several_sources_is_urgent():
+    item = Article(title="Vendor zero-day hits appliances", url="https://example.com/z", source="Test")
+    item.corroboration = 4
+    score_article(item)
+
+    assert is_urgent(item, make_settings())[0]
+
+
+def test_nickname_already_published_is_not_alerted_again():
+    first = critical_article(url="https://a.example/1")
+    again = critical_article(url="https://b.example/2")
+
+    assert distinct_stories([again], covered_titles=["critical java4shell flaw"]) == []
+    assert distinct_stories([first, again]) == [first]
+
+
+# --- Digest window ---
+
+def test_late_digest_reaches_back_to_the_previous_one():
+    from datetime import datetime, timedelta, timezone
+    from selection import DailyBudget
+
+    budget = DailyBudget("UTC", digest_hour=8)
+    now = datetime(2026, 11, 18, 9, 30, tzinfo=timezone.utc)
+
+    assert budget.digest_window_hours(24, 48, now) == 24  # nothing known yet
+
+    budget.note_digest(now - timedelta(hours=25, minutes=30))
+    assert budget.digest_window_hours(24, 48, now) == 26
+
+    budget.note_digest_from_timestamp((now - timedelta(days=4)).timestamp())
+    assert budget.digest_window_hours(24, 48, now) == 26  # the latest digest counts
+
+    stale = DailyBudget("UTC", digest_hour=8)
+    stale.note_digest(now - timedelta(days=4))
+    assert stale.digest_window_hours(24, 48, now) == 48
+
+
+def test_digest_run_collects_since_the_previous_digest(monkeypatch):
+    from datetime import timedelta
+
+    asked = []
+
+    async def fetch(feeds, max_age_hours, *args, **kwargs):
+        asked.append(max_age_hours)
+        return [], [FeedResult(name="feed", articles=[])]
+
+    monkeypatch.setattr(sources, "fetch_all_feeds", fetch)
+    pipe = primed(FakeChannel(), make_settings(digest_hour=0, max_age_hours=24))
+    pipe.budget.note_digest(pipe.budget.now() - timedelta(hours=29, minutes=30))
+
+    asyncio.run(pipe.run_cycle(FakeChannel()))
+
+    assert asked == [30]

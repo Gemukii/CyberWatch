@@ -14,6 +14,7 @@ from difflib import SequenceMatcher
 from sources import Article
 from state import State, normalize_title
 from categories import categorize_article
+from enrichment import extract_cves
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +46,10 @@ EXCLUDE_RE = [re.compile(p, re.IGNORECASE) for p in EXCLUDE_PATTERNS]
 KEYWORD_SIGNALS: dict[str, tuple[str, int]] = {
     "actively-exploited": (
         r"\bactively exploited\b"
-        r"|\bexploited in the wild\b"
+        r"|\bexploited in (?:the wild|attacks)\b"
+        r"|\bexploitation in the wild\b"
+        r"|\bunder active (?:attack|exploitation)\b"
+        r"|\b(?:hackers|attackers|threat actors) (?:are |now )?exploit(?:ing)?\b"
         r"|\bexploitation active\b"
         r"|\bexploité[e]?\s+activement\b",
         6,
@@ -96,6 +100,52 @@ KEYWORD_SIGNALS: dict[str, tuple[str, int]] = {
         r"|\bchaîne d'approvisionnement\b",
         4,
     ),
+
+    # "Critical" alone also qualifies infrastructure, so it has to sit next
+    # to the flaw it describes.
+    "critical-severity": (
+        r"\bcritical(?:[- ]severity)?\s+(?:[\w.-]+\s+){0,2}"
+        r"(?:vulnerabilit(?:y|ies)|flaws?|bugs?|rce|zero-day)\b"
+        r"|\bvulnérabilité critique\b|\bfaille critique\b",
+        3,
+    ),
+
+    "unauthenticated": (
+        r"\bunauthenticated\b"
+        r"|\bpre-?auth(?:entication|enticated)?\b"
+        r"|\bwithout authentication\b"
+        r"|\bsans authentification\b"
+        r"|\bnon authentifié[e]?\b",
+        4,
+    ),
+
+    "public-exploit": (
+        r"\bproof[- ]of[- ]concept\b"
+        r"|\bpoc (?:exploit|code|released|published)\b"
+        r"|\bpublic(?:ly available)? exploit\b"
+        r"|\bexploit (?:code )?(?:is )?(?:now )?(?:released|published|available)\b"
+        r"|\bpreuve de concept\b",
+        3,
+    ),
+
+    "mass-exploitation": (
+        r"\bmass(?:ive)?[- ]exploitation\b"
+        r"|\bmass[- ]scann?ing\b"
+        r"|\bwormable\b"
+        r"|\bexploitation (?:massive|de masse)\b",
+        5,
+    ),
+
+    # A government agency telling everyone to patch now: as close to an
+    # official verdict as a story gets before the catalogs catch up.
+    "patch-urged": (
+        r"\bCISA (?:urges|warns|orders|tells)\b"
+        r"|\bemergency directive\b"
+        r"|\burges? (?:immediate |urgent )?patching\b"
+        r"|\bpatch (?:now|immediately)\b"
+        r"|\bcorriger (?:immédiatement|sans délai)\b",
+        4,
+    ),
 }
 
 SOURCE_TYPE_BONUS: dict[str, int] = {
@@ -118,7 +168,90 @@ KEYWORD_RE = [
     for name, (pattern, weight) in KEYWORD_SIGNALS.items()
 ]
 
-CVSS_RE = re.compile(r"\bCVSS[^0-9]{0,12}(\d{1,2}(?:\.\d)?)", re.IGNORECASE)
+# Articles name the CVSS version before the score: "CVSS v3.1 score of 8.1",
+# "CVSS 4.0 score of 9.2". The optional version group skips it. When nothing
+# follows the version, the regex backtracks and reads the version as a score,
+# which is why cvss_score() keeps the highest value rather than the first.
+CVSS_RE = re.compile(
+    r"\bCVSS(?:\s*v?[234]\.[01](?!\d))?[^0-9]{0,25}?(\d{1,2}(?:\.\d)?)(?![\d.]*\d)(?!\w)",
+    re.IGNORECASE,
+)
+
+# Corroboration: how many sources cover the same story.
+# Named flaws (Log4Shell, Java4Shell, Heartbleed...) give a story away even
+# where outlets leave out the CVE. Matched on lowercase text.
+NAMED_FLAW_RE = re.compile(r"\b[a-z0-9]{2,}(?:shell|bleed)\b")
+NOT_A_FLAW_NAME = frozenset(
+    {"powershell", "webshell", "subshell", "nutshell", "eggshell", "bombshell", "seashell"}
+)
+# Corroboration thresholds and their score bonus.
+CORROBORATION_BONUS = ((5, 6), (3, 4))
+# Beyond this many CVEs, an article is a list rather than one story.
+MAX_STORY_CVES = 3
+
+
+def cvss_score(text: str) -> float | None:
+    """Highest CVSS score quoted in the text, None if there is none."""
+    values = []
+    for match in CVSS_RE.finditer(text):
+        try:
+            value = float(match.group(1))
+        except ValueError:
+            continue
+        if 0 <= value <= 10:
+            values.append(value)
+    return max(values, default=None)
+
+
+def named_flaws(text: str) -> set[str]:
+    """Flaw nicknames in a text, lowercased."""
+    return {
+        name
+        for name in NAMED_FLAW_RE.findall(text.lower())
+        if name not in NOT_A_FLAW_NAME
+    }
+
+
+def story_keys(article: Article) -> set[str]:
+    """What identifies the story: its CVEs and the flaw's nickname, if any."""
+    cves = set(article.cves or extract_cves(article.title, article.summary))
+    return cves | named_flaws(article.title)
+
+
+def corroborate(articles: list[Article], pool: list[Article]) -> None:
+    """
+    Counts, for each article, the distinct sources covering the same story.
+
+    Nine articles from six outlets in a day is the clearest sign a story is
+    major, long before KEV or EPSS have a word to say. Deduplication would
+    otherwise keep one article and throw that signal away.
+
+    A CVE counts when another article names it in its title or opening, a
+    nickname only in its title: a nickname quoted in passing ("since
+    Log4Shell...") isn't the story.
+    """
+    indexed = []
+    for item in pool:
+        # The full text only exists for the shortlist: its opening counts
+        # where it was fetched, the RSS summary elsewhere.
+        cves = set(extract_cves(item.title, item.content[:1500]))
+        # A roundup or a Patch Tuesday list names every CVE of the week:
+        # it corroborates none of them.
+        if len(cves) > MAX_STORY_CVES:
+            cves = set()
+        indexed.append((item.source, cves, named_flaws(item.title)))
+
+    for article in articles:
+        keys = story_keys(article)
+        cves = {key for key in keys if key.startswith("CVE-")}
+        if len(cves) > MAX_STORY_CVES:
+            cves = set()
+        names = keys - {key for key in keys if key.startswith("CVE-")}
+        sources = {article.source}
+        for source, item_cves, item_names in indexed:
+            if cves & item_cves or names & item_names:
+                sources.add(source)
+        article.corroboration = len(sources)
 
 
 def is_excluded(article: Article) -> str | None:
@@ -229,19 +362,23 @@ def score_article(
         reasons.append(f"EPSS {article.epss_max:.0%}")
 
     # CVSS score mentioned in the text.
-    cvss = CVSS_RE.search(body)
-    if cvss:
-        try:
-            value = float(cvss.group(1))
-            if 0 <= value <= 10:
-                if value >= 9.0:
-                    score += 3
-                elif value >= 7.0:
-                    score += 2
-                signals.append("cvss")
-                reasons.append(f"CVSS {value}")
-        except ValueError:
-            pass
+    article.cvss_max = cvss_score(f"{title} {body}")
+    if article.cvss_max is not None:
+        if article.cvss_max >= 9.0:
+            score += 3
+        elif article.cvss_max >= 7.0:
+            score += 2
+        signals.append("cvss")
+        reasons.append(f"CVSS {article.cvss_max}")
+
+    # Several independent sources on the same story. Factual: a count of
+    # outlets, not a word choice, so votes never adjust it.
+    for threshold, bonus in CORROBORATION_BONUS:
+        if article.corroboration >= threshold:
+            score += bonus
+            signals.append("corroborated")
+            reasons.append(f"{article.corroboration} sources")
+            break
 
     # An article with no usable content can't be summarized well.
     if len(article.content) < 200:

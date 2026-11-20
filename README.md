@@ -20,7 +20,7 @@ As an example, one run on 5 November 2026 read 40 recent articles, kept the 15 b
 ## Features
 
 * **Daily digest:** the best articles of the day, capped by a daily quota
-* **Immediate alerts:** for CVEs in KEV, very high EPSS on a recent CVE, or reported exploitation of a product on your watchlist. Only the CVEs an article is about count, and news roundups never trigger one
+* **Immediate alerts:** for CVEs in KEV, very high EPSS on a recent CVE, reported exploitation of a product on your watchlist, or a critical flaw or reported exploitation that several sources cover at once, before the catalogs catch up. Only the CVEs an article is about count, and news roundups never trigger one
 * **Late escalation:** when a CVE already covered enters KEV, a new alert links back to the article
 * **AI summaries:** threat, impact, target and action, with Gemini, a local Ollama model, or no AI
 * **Learning from votes:** 👍 and 👎 reactions adjust the ranking, within limits
@@ -119,7 +119,7 @@ Matching articles rank higher and show a 🎯 field, and reported exploitation o
 
 ### Reliable hourly runs
 
-GitHub skips scheduled runs under load: this project's first day got 2 runs out of about 17. An external scheduler fixes that, and GitHub's schedule stays as a fallback.
+GitHub skips scheduled runs under load: this project's first day got 2 runs out of about 17, and in November 2026 only 3 or 4 a day got through, which delayed the digest by hours and left a critical flaw unreported for a day. The workflow asks for two runs an hour to soften this, but only an external scheduler fixes it. GitHub's schedule then stays as a fallback.
 
 1. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to this repository, with **Actions: Read and write** only and an expiry date. It can start workflows, but can't change the code or read secrets.
 2. In a scheduler such as [cron-job.org](https://cron-job.org), add an hourly job. The digest goes out on the first run after `DIGEST_HOUR`, so a job a few minutes past each hour sends it on time:

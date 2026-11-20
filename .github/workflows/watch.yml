@@ -3,7 +3,11 @@ name: watch
 on:
   schedule:
     # Off the hour: GitHub delays runs most at the top of the hour.
-    - cron: "17 * * * *"
+    # Twice an hour because GitHub drops most scheduled runs under load (3 or
+    # 4 a day got through in November 2026). An extra run costs nothing: it
+    # rebuilds state from Discord and only publishes what is due. The
+    # external scheduler in the README remains the reliable fix.
+    - cron: "17,47 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:

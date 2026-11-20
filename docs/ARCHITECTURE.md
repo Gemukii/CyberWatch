@@ -141,6 +141,20 @@ An alert needs the signal to belong to the story. News roundups are never urgent
 
 The `watchlist` signal is factual, so votes never adjust it.
 
+## Corroboration
+
+KEV and EPSS lag days behind a fresh disclosure. A critical, pre-authentication flaw in a product everyone runs can make every outlet's front page while neither catalog knows it yet. Java4Shell (CVE-2026-114938) did exactly that in November 2026: nine articles from six sources in a day, and no alert.
+
+Each run counts how many distinct sources cover the same story. A story is identified by its CVEs, found in an article's title or opening, and by a flaw's nickname (Java4Shell, Heartbleed...) found in its title. An article listing more than three CVEs is a roundup, and corroborates none of them.
+
+Three sources add 4 points, five add 6. The `corroborated` signal is factual: votes never adjust it.
+
+With `URGENT_MIN_SOURCES` sources (3 by default), an article becomes urgent when it reports exploitation, or when it describes remote code execution or an authentication bypass that is also critical: rated critical, reachable without authentication, or scored CVSS 9 or more. The alert still counts towards `URGENT_DAILY_MAX`, and an article that names an already-published flaw by its nickname doesn't trigger a second one.
+
+## Digest window
+
+A one-shot run has no memory of the candidates earlier runs saw: the digest only knows what the feeds still list. When the last digest is further back than `MAX_AGE_HOURS`, the digest run reaches back to it, up to `DIGEST_MAX_AGE_HOURS`, so stories published just after it still compete. A feed only lists its latest entries, though: hourly runs remain what keeps them in reach.
+
 ## Security
 
 Article text is treated as hostile from collection to publication. See [SECURITY.md](SECURITY.md).

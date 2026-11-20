@@ -75,14 +75,17 @@ class Pipeline:
         self._feedback_refreshed_at = time.time()
         return True
 
-    async def collect(self, report: dict) -> list:
+    async def collect(self, report: dict, max_age_hours: int | None = None) -> list:
         """
         Free step: collects, filters, enriches, and feeds the candidate queue.
         No AI call happens here, so it can run every hour at no cost.
+
+        `max_age_hours` widens the window for a digest run, see
+        DailyBudget.digest_window_hours().
         """
         s = self.settings
         articles, feed_results = await sources.fetch_all_feeds(
-            s.feeds, s.max_age_hours, s.user_agent, s.http_timeout
+            s.feeds, max_age_hours or s.max_age_hours, s.user_agent, s.http_timeout
         )
         self.state.record_feed_results(feed_results)
         self.failed_feeds = [r.name for r in feed_results if r.error]
@@ -98,6 +101,10 @@ class Pipeline:
 
         if not articles:
             return []
+
+        # Counted over everything fetched, before the cut: the number of
+        # outlets on a story is what lifts it past routine news.
+        filters.corroborate(articles, articles)
 
         # Pre-filter on title + RSS summary, lowered threshold: keeps margin
         # before the network-costly steps.
@@ -123,8 +130,11 @@ class Pipeline:
                 shortlist, s.user_agent, s.http_timeout, s.fulltext_max_chars
             )
 
-        # KEV / EPSS enrichment, then re-scoring on the full data.
+        # KEV / EPSS enrichment, then re-scoring on the full data. The full
+        # text can name a CVE the summary left out, so corroboration is
+        # counted again.
         await self.enricher.enrich(shortlist)
+        filters.corroborate(shortlist, articles)
         for article in shortlist:
             article.score, article.reasons = filters.score_article(
                 article,
@@ -244,7 +254,10 @@ class Pipeline:
         urgent, reasons = [], {}
         if slots > 0:
             ranked = [article for _, article in self.queue.ranked()]
-            for article in selection_mod.distinct_stories(ranked, self.state.tracked_cves()):
+            stories = selection_mod.distinct_stories(
+                ranked, self.state.tracked_cves(), self.state.recent_titles()
+            )
+            for article in stories:
                 flagged, reason = selection_mod.is_urgent(article, s)
                 if flagged:
                     urgent.append(article)
@@ -265,6 +278,7 @@ class Pipeline:
         ranked = selection_mod.distinct_stories(
             [article for _, article in self.queue.ranked()],
             self.state.tracked_cves(),
+            self.state.recent_titles(),
         )
 
         # Low floor: it only screens out obviously off-topic articles.
@@ -326,13 +340,19 @@ class Pipeline:
                 # articles must reflect the most recent votes.
                 await self.refresh_feedback(channel)
 
-                await self.collect(report)
+                digest_now = force_digest or self.budget.digest_due()
+                window = (
+                    self.budget.digest_window_hours(s.max_age_hours, s.digest_max_age_hours)
+                    if digest_now
+                    else None
+                )
+                await self.collect(report, max_age_hours=window)
 
                 if s.enable_kev_retro_check:
                     await self._escalate_kev(channel, report)
                 if s.enable_urgent:
                     await self._publish_urgent(channel, report)
-                if force_digest or self.budget.digest_due():
+                if digest_now:
                     await self._publish_digest(channel, report)
 
                 report["queue_size"] = len(self.queue)

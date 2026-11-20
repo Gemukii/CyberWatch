@@ -56,6 +56,10 @@ class Settings:
     # see the daily budget below.
     interval_minutes: int = _env_int("INTERVAL_MINUTES", 60)
     max_age_hours: int = _env_int("MAX_AGE_HOURS", 24)
+    # The digest reaches back to the previous one when that is longer ago
+    # than MAX_AGE_HOURS, up to this cap: a late or missed digest must not
+    # skip the stories published right after the last one.
+    digest_max_age_hours: int = _env_int("DIGEST_MAX_AGE_HOURS", 48)
     # Lifetime of a candidate in the queue. bot.py only: a one-shot run starts
     # with an empty queue, so MAX_AGE_HOURS is what bounds it there.
     candidate_ttl_hours: int = _env_int("CANDIDATE_TTL_HOURS", 36)
@@ -98,6 +102,9 @@ class Settings:
     urgent_epss_threshold: float = _env_float("URGENT_EPSS_THRESHOLD", 0.7)
     # Safety net for CVE-less stories (major compromise, etc.).
     urgent_score_threshold: int = _env_int("URGENT_SCORE_THRESHOLD", 30)
+    # Distinct sources on one story that turn a severe flaw, or reported
+    # exploitation, into an alert before KEV or EPSS confirm it.
+    urgent_min_sources: int = _env_int("URGENT_MIN_SOURCES", 3)
     # Anti-flood guard: even a catastrophic day stays bounded.
     urgent_daily_max: int = _env_int("URGENT_DAILY_MAX", 2)
     # Mention sent with an urgent alert: "none", "here", or a role ID.

@@ -54,6 +54,11 @@ class Article:
     # Watchlist terms found in the article
     watch_matches: list[str] = field(default_factory=list)
 
+    # Highest CVSS score quoted in the text, None if there is none
+    cvss_max: float | None = None
+    # Distinct sources reporting the same story in this run, itself included
+    corroboration: int = 1
+
     # Classification
     category: str = "General Security"
     category_tags: list[str] = field(default_factory=list)

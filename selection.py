@@ -8,12 +8,14 @@ only the best of the day make it out. See docs/ARCHITECTURE.md.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from enrichment import extract_cves
+from filters import named_flaws
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +31,10 @@ LEAD_CHARS = 800
 # EPSS stays high for years on old CVEs: on its own it says nothing new about
 # them. KEV is different, a listing is news whatever the CVE's age.
 EPSS_RECENT_YEARS = 2
+# Signal names from filters.KEYWORD_SIGNALS, for the corroborated alert.
+EXPLOITATION_SIGNALS = frozenset({"actively-exploited", "zero-day", "mass-exploitation"})
+SEVERE_IMPACT_SIGNALS = frozenset({"remote-code-execution", "authentication-bypass"})
+CRITICAL_SIGNALS = frozenset({"critical-severity", "unauthenticated"})
 
 
 class CandidateQueue:
@@ -102,6 +108,7 @@ class DailyBudget:
             self.tz = timezone.utc
         self.digest_hour = digest_hour
         self._last_digest_date: str | None = None
+        self._last_digest_ts: float | None = None
         # Keyed by (kind, date): shared trimming logic for every daily
         # counter (urgent alerts, KEV escalations, and whatever comes next)
         # instead of one hand-duplicated dict per kind.
@@ -130,14 +137,22 @@ class DailyBudget:
     def last_digest_date(self) -> str | None:
         return self._last_digest_date
 
+    @property
+    def last_digest_ts(self) -> float | None:
+        return self._last_digest_ts
+
     def note_digest(self, moment: datetime | None = None) -> None:
+        moment = moment or self.now()
         self._last_digest_date = self.today_key(moment)
+        self._last_digest_ts = moment.timestamp()
 
     def note_digest_from_timestamp(self, ts: float) -> None:
         """Used during startup priming, by re-reading Discord history."""
         date_key = self.today_key(datetime.fromtimestamp(ts, tz=self.tz))
         if self._last_digest_date is None or date_key > self._last_digest_date:
             self._last_digest_date = date_key
+        if self._last_digest_ts is None or ts > self._last_digest_ts:
+            self._last_digest_ts = ts
 
     def digest_due(self, moment: datetime | None = None) -> bool:
         """
@@ -151,6 +166,20 @@ class DailyBudget:
         if moment.hour < self.digest_hour:
             return False
         return self._last_digest_date != self.today_key(moment)
+
+    def digest_window_hours(self, default: int, cap: int, moment: datetime | None = None) -> int:
+        """
+        How far back the digest's collection reaches.
+
+        Normally `default`. When the last digest is further back, the window
+        stretches to it, up to `cap`, so the stories published just after
+        that digest still get their chance.
+        """
+        if self._last_digest_ts is None:
+            return default
+        moment = moment or self.now()
+        since = (moment.timestamp() - self._last_digest_ts) / 3600
+        return max(default, min(cap, math.ceil(since)))
 
     def next_digest_at(self, moment: datetime | None = None) -> datetime:
         moment = moment or self.now()
@@ -191,22 +220,30 @@ class DailyBudget:
         return max(0, daily_max - self.kev_escalation_count_today())
 
 
-def distinct_stories(articles: list, covered_cves=()) -> list:
+def distinct_stories(articles: list, covered_cves=(), covered_titles=()) -> list:
     """
     Keeps one article per story, given articles sorted best first.
 
     Outlets word their headlines differently, so title similarity misses
     them, but the CVE gives the story away. An article only drops out if it
     brings no new CVE: `covered_cves` are the ones already published.
-    Articles without any CVE always stay.
+
+    An article without any CVE drops out when its title names a flaw
+    (Java4Shell...) already in a published title, `covered_titles`, or in a
+    better article of this batch. Other articles without a CVE always stay.
     """
     covered = {cve.upper() for cve in covered_cves}
+    covered_names = set().union(*(named_flaws(title) for title in covered_titles))
     kept = []
     for article in articles:
         cves = {cve.upper() for cve in getattr(article, "cves", None) or []}
+        names = named_flaws(article.title)
         if cves and cves <= covered:
             continue
+        if not cves and names and names <= covered_names:
+            continue
         covered |= cves
+        covered_names |= names
         kept.append(article)
     return kept
 
@@ -280,7 +317,20 @@ def is_urgent(article, settings) -> tuple[bool, str]:
     if watched and ("actively-exploited" in signals or "zero-day" in signals):
         return True, f"{watched[0]} is on your watchlist — exploitation reported"
 
-    # 4. Safety net: exceptional score, well above the usual threshold.
+    # 4. A severe flaw several sources report at once. KEV and EPSS lag days
+    #    behind a disclosure like this, and waiting for them means hearing
+    #    about it last. Several outlets on one story is what makes press
+    #    wording trustworthy here.
+    sources = getattr(article, "corroboration", 1)
+    if sources >= settings.urgent_min_sources:
+        if EXPLOITATION_SIGNALS & set(signals):
+            return True, f"exploitation reported by {sources} sources"
+        cvss = getattr(article, "cvss_max", None)
+        critical = CRITICAL_SIGNALS & set(signals) or (cvss is not None and cvss >= 9.0)
+        if SEVERE_IMPACT_SIGNALS & set(signals) and critical:
+            return True, f"critical flaw reported by {sources} sources, before any exploitation catalog"
+
+    # 5. Safety net: exceptional score, well above the usual threshold.
     #    Covers CVE-less stories (major compromise, supply-chain incident)
     #    that no catalog would otherwise catch.
     if getattr(article, "score", 0) >= settings.urgent_score_threshold:
